@@ -31,6 +31,7 @@ from nemo.collections.asr.parts.utils.tokenizer_utils import define_spe_tokenize
 from nemo.collections.common.tokenizers.aggregate_tokenizer import DummyTokenizer
 from nemo.collections.common.tokenizers.tokenizer_spec import TokenizerSpec
 from nemo.utils import logging, logging_mode
+from nemo.utils.serialization import register_checkpoint_schema_types
 
 
 def move_dimension_to_the_front(tensor, dim_index):
@@ -1069,7 +1070,7 @@ class CTCDecoding(AbstractCTCDecoding):
             A list of word-level confidence scores.
         """
         return self._aggregate_token_confidence_chars(
-            self.decode_tokens_to_str(hypothesis.text[0]).split(), hypothesis.token_confidence
+            self.decode_ids_to_str(hypothesis.text[0]).split(), hypothesis.token_confidence
         )
 
     def decode_tokens_to_str(self, tokens: List[str]) -> str:
@@ -1389,3 +1390,6 @@ class CTCDecodingConfig:
 @dataclass
 class CTCBPEDecodingConfig(CTCDecodingConfig):
     pass
+
+
+register_checkpoint_schema_types(CTCDecodingConfig, CTCBPEDecodingConfig)

@@ -18,6 +18,10 @@ from typing import Dict, List
 
 import numpy as np
 
+# special tokens of end-of-utterance models: end of utterance and end of backchannel
+EOU_STRING = '<EOU>'
+EOB_STRING = '<EOB>'
+
 
 @dataclass
 class EOUResult:

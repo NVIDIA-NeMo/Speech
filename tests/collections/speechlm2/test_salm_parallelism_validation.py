@@ -172,3 +172,67 @@ def test_unknown_device_capability_warns_not_raises():
         )
     assert len(caught) == 1
     assert "NVTE_FUSED_ATTN" in str(caught[0].message)
+
+
+# THD + TE + NVTE_FUSED_ATTN=0 routes causal attention to flash-attn-4, which TE < 2.21 drives with a window that
+# admits no keys (zero attention). Raised regardless of ``check_backward`` and device capability.
+
+
+@pytest.mark.parametrize("check_backward", [True, False])
+@pytest.mark.parametrize("device_capability", [(12, 0), (9, 0), None])
+@pytest.mark.parametrize("te_version", ["2.15.0+42b84005", "2.20.2"])
+def test_thd_te_flash_attn_4_with_old_te_raises(check_backward, device_capability, te_version):
+    with pytest.raises(ValueError, match="transformer-engine>=2.21"):
+        validate_parallelism_compatibility(
+            packed_sequences=True,
+            cp_size=1,
+            attn_backend="te",
+            nvte_fused_attn="0",
+            device_capability=device_capability,
+            check_backward=check_backward,
+            te_version=te_version,
+            flash_attn_4_version="4.0.0b39",
+        )
+
+
+@pytest.mark.parametrize(
+    "packed_sequences,nvte_fused_attn,te_version,flash_attn_4_version",
+    [
+        (True, "0", "2.21.0+7457e47d", "4.0.0b39"),  # fixed TE
+        (True, "0", "2.22.0.dev0", "4.0.0b39"),
+        (True, "0", "2.15.0", None),  # flash-attn-4 not installed: TE uses another FlashAttention
+        (True, "0", None, "4.0.0b39"),  # TE not installed
+        (False, "0", "2.15.0", "4.0.0b39"),  # BSHD does not take this path
+    ],
+)
+def test_thd_te_flash_attn_4_version_check_passes(packed_sequences, nvte_fused_attn, te_version, flash_attn_4_version):
+    validate_parallelism_compatibility(
+        packed_sequences=packed_sequences,
+        cp_size=1,
+        attn_backend="te",
+        nvte_fused_attn=nvte_fused_attn,
+        device_capability=(12, 0),
+        te_version=te_version,
+        flash_attn_4_version=flash_attn_4_version,
+    )
+
+
+def test_thd_te_fused_attn_on_sm120_still_reports_fused_attn_with_old_te():
+    """Without NVTE_FUSED_ATTN=0 TE keeps cuDNN fused attention, so only the existing sm_120 check applies."""
+    with pytest.raises(ValueError, match="NVTE_FUSED_ATTN"):
+        validate_parallelism_compatibility(
+            packed_sequences=True,
+            cp_size=1,
+            attn_backend="te",
+            nvte_fused_attn=None,
+            device_capability=(12, 0),
+            te_version="2.15.0",
+            flash_attn_4_version="4.0.0b39",
+        )
+
+
+def test_installed_version_handles_missing_packages():
+    from nemo.collections.speechlm2.parts.parallel import installed_version
+
+    assert installed_version("pytest") == pytest.__version__
+    assert installed_version("surely-not-an-installed-package-xyz") is None

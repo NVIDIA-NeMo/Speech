@@ -372,15 +372,22 @@ sequence rounding aligns naturally with CP's ``2*cp_size`` requirement.
 .. note::
    **TE/THD exploding-gradients workaround on some GPUs.** On certain GPU
    architectures (notably Blackwell ``sm_120``), the cuDNN backend that
-   TransformerEngine 2.14 picks for ``qkv_format="thd"`` with
+   TransformerEngine picks for ``qkv_format="thd"`` with
    ``attn_mask_type="padding_causal"`` returns correct forward activations
-   but gradients amplified 8×–960× per layer. Compounded across the LLM's
+   but gradients amplified 8×–960× per layer (observed with TransformerEngine 2.14 and 2.15). Compounded across the LLM's
    attention stack this drives gradients to ``1e22``-magnitudes at step 0,
    the gradient-clip-by-norm computes ``1.0 / inf = 0``, and Adam's moments
    eventually NaN. Force TE to dispatch FlashAttention instead of cuDNN by
    setting ``NVTE_FUSED_ATTN=0`` in the launcher environment (requires
    ``flash-attn`` to be installed for your GPU arch). The FlashAttention
    THD/``padding_causal`` backward is gradient-correct on the same shapes.
+   On Blackwell, TransformerEngine dispatches this to flash-attn-4 (``flash_attn.cute``), which requires
+   TransformerEngine 2.21 or newer: earlier releases pass the causal mask as a window that flash-attn-4 treats
+   as admitting no keys, so attention outputs and q/k/v gradients are zero while the loss still decreases.
+   SALMAutomodel refuses packed TE attention with ``NVTE_FUSED_ATTN=0`` when flash-attn-4 is installed alongside
+   an older TransformerEngine.
+   ``examples/speechlm2/finetuning/run_training.py`` sets ``NVTE_FUSED_ATTN=0`` automatically for packed
+   training on ``sm_120``.
 
 To configure parallelism, modify the ``trainer.strategy`` section in your YAML config:
 
@@ -409,6 +416,10 @@ For Fully Sharded Data Parallel training:
 
 FSDP2 shards the model parameters across GPUs, all-gathers them for forward/backward passes, and then de-allocates after computation. This allows training of larger models with limited GPU memory.
 See `PyTorch FSDP2 <https://pytorch.org/docs/stable/distributed.fsdp.fully_shard.html>`_ for more details.
+
+Sharded DCP checkpoints restore FusedAdam BF16 moments directly into existing GPU
+buffers when master-weight remainders are enabled. Other optimizer configurations
+use the standard restore path.
 
 Tensor Parallelism Configuration (HF Automodel)
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

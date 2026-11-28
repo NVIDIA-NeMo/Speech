@@ -23,7 +23,7 @@ dynamic = ["version"]
 description = "NeMo - a toolkit for Conversational AI"
 readme = "README.md"
 license = {file = "LICENSE"}
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 dependencies = [
     "aistore",
     "huggingface_hub>=0.24",
@@ -67,7 +67,7 @@ classifiers = [
     "Natural Language :: English",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Scientific/Engineering :: Image Recognition",
     "Topic :: Scientific/Engineering :: Mathematics",
@@ -79,29 +79,29 @@ classifiers = [
 
 [project.optional-dependencies]
 core = [
-    "hydra-core>1.3,<=1.3.2",
-    "lightning>2.2.1,<=2.4.0",
-    "omegaconf<=2.3",
+    "hydra-core>=1.3.8,<1.4",
+    "lightning>=2.6.6,<2.7",
+    "pytorch-lightning>=2.6.6,<2.7",
+    "omegaconf>=2.3,<2.4",
     "torchmetrics>=0.11.0",
     "transformers",
     "wandb",
     "webdataset>=0.2.86",
     "nv_one_logger_core>=2.3.1",
     "nv_one_logger_training_telemetry>=2.3.1",
-    "nv_one_logger_pytorch_lightning_integration>=2.3.1",
 ]
 
 lightning = [
-    "hydra-core>1.3,<=1.3.2",
-    "lightning>2.2.1,<=2.4.0",
-    "omegaconf<=2.3",
+    "hydra-core>=1.3.8,<1.4",
+    "lightning>=2.6.6,<2.7",
+    "pytorch-lightning>=2.6.6,<2.7",
+    "omegaconf>=2.3,<2.4",
     "torchmetrics>=0.11.0",
     "transformers",
     "wandb",
     "webdataset>=0.2.86",
     "nv_one_logger_core>=2.3.1",
     "nv_one_logger_training_telemetry>=2.3.1",
-    "nv_one_logger_pytorch_lightning_integration>=2.3.1",
 ]
 
 common-only = [
@@ -147,16 +147,16 @@ tts = [
     "whisper_normalizer",
     "datasets>=3.2.0",
     "sentencepiece<1.0.0",
-    "hydra-core>1.3,<=1.3.2",
-    "lightning>2.2.1,<=2.4.0",
-    "omegaconf<=2.3",
+    "hydra-core>=1.3.8,<1.4",
+    "lightning>=2.6.6,<2.7",
+    "pytorch-lightning>=2.6.6,<2.7",
+    "omegaconf>=2.3,<2.4",
     "torchmetrics>=0.11.0",
     "transformers",
     "wandb",
     "webdataset>=0.2.86",
     "nv_one_logger_core>=2.3.1",
     "nv_one_logger_training_telemetry>=2.3.1",
-    "nv_one_logger_pytorch_lightning_integration>=2.3.1",
 ]
 
 audio = [
@@ -171,16 +171,16 @@ audio = [
     "datasets>=3.2.0",
     "pandas",
     "sentencepiece<1.0.0",
-    "hydra-core>1.3,<=1.3.2",
-    "lightning>2.2.1,<=2.4.0",
-    "omegaconf<=2.3",
+    "hydra-core>=1.3.8,<1.4",
+    "lightning>=2.6.6,<2.7",
+    "pytorch-lightning>=2.6.6,<2.7",
+    "omegaconf>=2.3,<2.4",
     "torchmetrics>=0.11.0",
     "transformers",
     "wandb",
     "webdataset>=0.2.86",
     "nv_one_logger_core>=2.3.1",
     "nv_one_logger_training_telemetry>=2.3.1",
-    "nv_one_logger_pytorch_lightning_integration>=2.3.1",
 ]
 
 speechlm2-only = [
@@ -193,20 +193,20 @@ speechlm2-only = [
 # Install this serving extra separately from the cu*/compiled* extras below.
 vllm = [
     "peft>=0.18.1",
-    "vllm==0.32.0; sys_platform == 'linux' and python_version >= '3.11'",
+    "vllm==0.33.0; sys_platform == 'linux' and python_version >= '3.11'",
 ]
 
 all = [
-    "hydra-core>1.3,<=1.3.2",
-    "lightning>2.2.1,<=2.4.0",
-    "omegaconf<=2.3",
+    "hydra-core>=1.3.8,<1.4",
+    "lightning>=2.6.6,<2.7",
+    "pytorch-lightning>=2.6.6,<2.7",
+    "omegaconf>=2.3,<2.4",
     "torchmetrics>=0.11.0",
     "transformers",
     "wandb",
     "webdataset>=0.2.86",
     "nv_one_logger_core>=2.3.1",
     "nv_one_logger_training_telemetry>=2.3.1",
-    "nv_one_logger_pytorch_lightning_integration>=2.3.1",
     "datasets>=3.2.0",
     "einops",
     "pandas",
@@ -260,7 +260,7 @@ compiled = [
     # v2.8.3 release assets do not include a cu13/torch2.12/cp313 wheel,
     # so uv builds this from source under the Dockerfile build environment.
     "flash-attn==2.8.3",
-    "transformer-engine[pytorch,core_cu13]==2.15"
+    "transformer-engine[pytorch,core_cu13]==2.21.0"
 ]
 
 compiled-a100 = [
@@ -273,7 +273,7 @@ compiled-a100 = [
     # v2.8.3 release assets do not include a cu13/torch2.12/cp313 wheel,
     # so uv builds this from source under the Dockerfile build environment.
     "flash-attn==2.8.3",
-    "transformer-engine[pytorch,core_cu12]==2.15"
+    "transformer-engine[pytorch,core_cu12]==2.21.0"
 ]
 
 common = [
@@ -281,16 +281,16 @@ common = [
     "einops",
     "pandas",
     "sentencepiece<1.0.0",
-    "hydra-core>1.3,<=1.3.2",
-    "lightning>2.2.1,<=2.4.0",
-    "omegaconf<=2.3",
+    "hydra-core>=1.3.8,<1.4",
+    "lightning>=2.6.6,<2.7",
+    "pytorch-lightning>=2.6.6,<2.7",
+    "omegaconf>=2.3,<2.4",
     "torchmetrics>=0.11.0",
     "transformers",
     "wandb",
     "webdataset>=0.2.86",
     "nv_one_logger_core>=2.3.1",
     "nv_one_logger_training_telemetry>=2.3.1",
-    "nv_one_logger_pytorch_lightning_integration>=2.3.1",
 ]
 
 asr = [
@@ -307,16 +307,16 @@ asr = [
     "datasets>=3.2.0",
     "pandas",
     "sentencepiece<1.0.0",
-    "hydra-core>1.3,<=1.3.2",
-    "lightning>2.2.1,<=2.4.0",
-    "omegaconf<=2.3",
+    "hydra-core>=1.3.8,<1.4",
+    "lightning>=2.6.6,<2.7",
+    "pytorch-lightning>=2.6.6,<2.7",
+    "omegaconf>=2.3,<2.4",
     "torchmetrics>=0.11.0",
     "transformers",
     "wandb",
     "webdataset>=0.2.86",
     "nv_one_logger_core>=2.3.1",
     "nv_one_logger_training_telemetry>=2.3.1",
-    "nv_one_logger_pytorch_lightning_integration>=2.3.1",
 ]
 
 speechlm2 = [
@@ -336,16 +336,16 @@ speechlm2 = [
     "datasets>=3.2.0",
     "pandas",
     "sentencepiece<1.0.0",
-    "hydra-core>1.3,<=1.3.2",
-    "lightning>2.2.1,<=2.4.0",
-    "omegaconf<=2.3",
+    "hydra-core>=1.3.8,<1.4",
+    "lightning>=2.6.6,<2.7",
+    "pytorch-lightning>=2.6.6,<2.7",
+    "omegaconf>=2.3,<2.4",
     "torchmetrics>=0.11.0",
     "transformers",
     "wandb",
     "webdataset>=0.2.86",
     "nv_one_logger_core>=2.3.1",
     "nv_one_logger_training_telemetry>=2.3.1",
-    "nv_one_logger_pytorch_lightning_integration>=2.3.1",
     "janome",
     "jieba",
     "librosa",
@@ -402,6 +402,8 @@ extend-exclude = '''
 addopts = "--verbose --pyargs --durations=0 --strict-markers"  # always add these arguments to pytest
 testpaths = ["tests"]
 pythonpath = ["tests/e2e_nightly"]
+# Fail a hung test instead of letting it consume the whole CI job timeout (requires pytest-timeout).
+timeout = 300
 # directories to ignore when discovering tests
 norecursedirs = [
     "nemo",
@@ -462,17 +464,29 @@ conflicts = [
     ],
 ]
 override-dependencies = [
+    "black>=26.10.1",
+    "anyio>=4.14.2",
+    "dnspython>=2.9.2",
+    "transformers>=5.16.1",
+    "nltk>=3.10.4",
+    "accelerate>=1.14.0",
+    "msgpack>=1.2.3",
+    "fsspec>=2026.6.0",
     "mlflow>=3.11.1",
     "cryptography>=46.0.5",
-    "wandb>=0.28.0",
-    "urllib3>=2.6.0",
+    "wandb>=0.31.0",
+    "urllib3>=2.8.0",
     "opencv-python-headless; sys_platform == 'never'",
     "lxml>=6.1.0",
     "gitpython>=3.1.50",
     "mako>=1.3.12",
     "pyarrow>=23.0.1",
-    "aiohttp>=3.14.3",
-    "pillow>=12.3.0"
+    "aiohttp>=3.14.4",
+    "pillow>=13.0.0",
+    # mamba-ssm 2.3.2.post1 caps apache-tvm-ffi at 0.1.9, but transformer-engine 2.21 requires
+    # nvidia-cudnn-frontend>=1.29, which requires apache-tvm-ffi>=0.1.11 (as does flash-attn-4).
+    # The container has shipped mamba-ssm with 0.1.11 since flash-attn-4 was added (docker/Dockerfile).
+    "apache-tvm-ffi==0.1.11"
 ]
 no-binary-package = [
     "causal-conv1d",
@@ -493,6 +507,11 @@ no-build-isolation-package = [
 [tool.uv.extra-build-dependencies]
 deep-ep = ["setuptools"]
 
+# TransformerEngine >= 2.21 builds its NCCL EP library by default for sm_90+, even when uv only reads its metadata.
+# NeMo does not use it, and it would link against whichever NCCL ldconfig finds rather than the one PyTorch loads.
+[tool.uv.extra-build-variables.transformer-engine]
+NVTE_WITH_NCCL_EP = "0"
+
 # --- uv configuration ---
 # Keep Torch wheel indexes explicit per CUDA extra. Automodel's upstream source
 # metadata is mirrored below so this repository controls the CUDA wheel index.
@@ -507,8 +526,7 @@ torch = [
   { index = "pytorch-cu132", extra = "cu13", marker = "sys_platform == 'linux'" },
   { index = "pypi", marker = "sys_platform == 'darwin'" },
 ]
-transformer-engine = { git = "https://github.com/NVIDIA/TransformerEngine.git", tag = "v2.15" }
-nltk = { git = "https://github.com/nltk/nltk.git", tag = "v3.10.0-rc1" }
+transformer-engine = { git = "https://github.com/NVIDIA/TransformerEngine.git", tag = "v2.21.0" }
 
 [[tool.uv.index]]
 name = "pypi"
@@ -562,6 +580,7 @@ test = [
     "pytest-httpserver",
     "pytest-shard",
     "pytest-mock",
+    "pytest-timeout",
     "pytest-runner",
     "starlette",
     "wandb",

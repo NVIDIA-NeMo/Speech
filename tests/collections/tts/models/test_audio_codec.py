@@ -18,7 +18,7 @@ from unittest.mock import Mock
 
 import pytest
 import torch
-from omegaconf import DictConfig
+from omegaconf import DictConfig, open_dict
 
 import nemo.collections.tts.models.audio_codec as audio_codec_module
 from nemo.collections.tts.models import AudioCodecModel
@@ -97,6 +97,94 @@ def acoustic_codec_model():
     acoustic_codec_model = AudioCodecModel(cfg=acoustic_model_cfg)
 
     return acoustic_codec_model
+
+
+@pytest.fixture(params=[True, False, None], ids=['frozen', 'trainable', 'default'])
+def freeze_test_model(request):
+    # Small modules exercise dropout and mutable BatchNorm buffers without audio data or pretrained weights.
+    cfg = DictConfig(
+        {
+            'sample_rate': 8000,
+            'samples_per_frame': 1,
+            'loss_resolutions': [[16, 4, 16]],
+            'mel_loss_dims': [4],
+            'commit_loss_scale': 0.0,
+            'audio_encoder': {
+                '_target_': 'torch.nn.Sequential',
+                '_args_': [
+                    {'_target_': 'torch.nn.Linear', 'in_features': 4, 'out_features': 4},
+                    {'_target_': 'torch.nn.BatchNorm1d', 'num_features': 4},
+                    {'_target_': 'torch.nn.Dropout', 'p': 0.5},
+                ],
+            },
+            'audio_decoder': {'_target_': 'torch.nn.Linear', 'in_features': 4, 'out_features': 4},
+            'generator_loss': {'_target_': 'nemo.collections.tts.losses.audio_codec_loss.GeneratorSquaredLoss'},
+            'discriminator_loss': {
+                '_target_': 'nemo.collections.tts.losses.audio_codec_loss.DiscriminatorSquaredLoss'
+            },
+            'optim': {'_target_': 'torch.optim.Adam', 'lr': 0.01},
+        }
+    )
+    if request.param is not None:
+        cfg.freeze_encoder = request.param
+    torch.manual_seed(42)
+    return AudioCodecModel(cfg=cfg), request.param is True
+
+
+@pytest.mark.unit
+def test_freeze_encoder_modes(freeze_test_model):
+    model, frozen = freeze_test_model
+    # Freezing must take effect at construction, before optimizer setup.
+    assert all(p.requires_grad == (not frozen) for p in model.audio_encoder.parameters())
+    assert all(m.training == (not frozen) for m in model.audio_encoder.modules())
+    inputs = torch.randn(8, 4)
+    buffers_before = {name: buf.clone() for name, buf in model.audio_encoder.named_buffers()}
+
+    for mode in (True, False, True, False, True):
+        assert model.train(mode) is model
+        assert model.training == mode
+        assert model.audio_decoder.training == mode
+        assert all(m.training == (mode and not frozen) for m in model.audio_encoder.modules())
+        first = model.audio_encoder(inputs)
+        second = model.audio_encoder(inputs)
+        if frozen or not mode:
+            torch.testing.assert_close(first, second, rtol=0, atol=0)
+
+    for name, buf in model.audio_encoder.named_buffers():
+        if frozen:
+            torch.testing.assert_close(buf, buffers_before[name], rtol=0, atol=0)
+    if not frozen:
+        assert model.audio_encoder[1].num_batches_tracked.item() == 6
+
+
+@pytest.mark.unit
+def test_freeze_encoder_optimizer_step(freeze_test_model):
+    model, frozen = freeze_test_model
+    optimizer = model.configure_optimizers()
+    optimizer_params = {id(p) for group in optimizer.param_groups for p in group['params']}
+    assert all((id(p) in optimizer_params) == (not frozen) for p in model.audio_encoder.parameters())
+    assert all(id(p) in optimizer_params for p in model.audio_decoder.parameters())
+
+    model.eval().train()
+    encoder_before = {name: value.clone() for name, value in model.audio_encoder.state_dict().items()}
+    decoder_before = {name: value.clone() for name, value in model.audio_decoder.named_parameters()}
+    inputs, target = torch.randn(8, 4), torch.randn(8, 4)
+    optimizer.zero_grad()
+    prediction = model.audio_decoder(model.audio_encoder(inputs))
+    (prediction - target).square().mean().backward()
+    assert any(p.grad is not None and p.grad.abs().sum() > 0 for p in model.audio_decoder.parameters())
+    if frozen:
+        assert all(p.grad is None for p in model.audio_encoder.parameters())
+    else:
+        assert any(p.grad is not None and p.grad.abs().sum() > 0 for p in model.audio_encoder.parameters())
+    optimizer.step()
+
+    if frozen:
+        for name, value in model.audio_encoder.state_dict().items():
+            torch.testing.assert_close(value, encoder_before[name], rtol=0, atol=0)
+    else:
+        assert any(not torch.equal(p, encoder_before[name]) for name, p in model.audio_encoder.named_parameters())
+    assert any(not torch.equal(p, decoder_before[name]) for name, p in model.audio_decoder.named_parameters())
 
 
 class TestAudioCodecModel:
@@ -254,3 +342,40 @@ class TestAudioCodecModel:
         dropout_codebooks.assert_not_called()
         mmd_inputs.sum().backward()
         torch.testing.assert_close(full_codes.grad, torch.ones_like(full_codes))
+
+
+class _UnsizedIterableDataset(torch.utils.data.IterableDataset):
+    def __iter__(self):
+        return iter(range(4))
+
+
+class _SizedIterableDataset(_UnsizedIterableDataset):
+    def __len__(self):
+        return 4
+
+
+def _attach_trainer_and_train_dl(model, dataset, **cfg_overrides):
+    with open_dict(model._cfg):
+        model._cfg.update(cfg_overrides)
+    model._trainer = Mock(accumulate_grad_batches=1, limit_train_batches=1.0, num_devices=1, num_nodes=1)
+    model._train_dl = torch.utils.data.DataLoader(dataset, batch_size=2)
+
+
+@pytest.mark.unit
+def test_max_steps_from_max_epochs_with_unsized_dataset_raises_actionable_error(codec_model):
+    # Lhotse iterable datasets have no length; max_steps used to fail with a bare "has no len()" TypeError.
+    _attach_trainer_and_train_dl(codec_model, _UnsizedIterableDataset(), max_epochs=3)
+    with pytest.raises(ValueError, match="max_steps.*steps_per_epoch"):
+        codec_model.max_steps
+
+
+@pytest.mark.unit
+def test_max_steps_from_max_epochs_with_sized_dataset(codec_model):
+    _attach_trainer_and_train_dl(codec_model, _SizedIterableDataset(), max_epochs=3)
+    assert codec_model.max_steps == 6  # 3 epochs * ceil(4 samples / batch_size 2)
+
+
+@pytest.mark.unit
+def test_max_steps_from_steps_per_epoch_with_unsized_dataset(codec_model):
+    _attach_trainer_and_train_dl(codec_model, _UnsizedIterableDataset(), max_epochs=3, steps_per_epoch=5)
+    assert codec_model.max_steps == 15

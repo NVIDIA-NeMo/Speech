@@ -443,29 +443,31 @@ class _FusedSubsampling(torch.autograd.Function):
                 batch_size,
             )
 
-        _forward_kernel[grid](
-            mel,
-            conv_weight_cast,
-            conv_bias_cast,
-            taps_bin0,
-            taps_bin1,
-            depth_bias.to(dtype),
-            output,
-            mel_lengths,
-            relu_out_lengths,
-            out_lengths,
-            pad_start,
-            channels,
-            out_time,
-            out_freq,
-            mel_freq,
-            relu_out_freq,
-            mel.stride(0),
-            mel.stride(2),
-            output.stride(0),
-            output.stride(1),
-            output.stride(2),
-        )
+        # Triton launches in the current CUDA context, not on the tensors' device: pin it for the launch
+        with torch.cuda.device(mel.device):
+            _forward_kernel[grid](
+                mel,
+                conv_weight_cast,
+                conv_bias_cast,
+                taps_bin0,
+                taps_bin1,
+                depth_bias.to(dtype),
+                output,
+                mel_lengths,
+                relu_out_lengths,
+                out_lengths,
+                pad_start,
+                channels,
+                out_time,
+                out_freq,
+                mel_freq,
+                relu_out_freq,
+                mel.stride(0),
+                mel.stride(2),
+                output.stride(0),
+                output.stride(1),
+                output.stride(2),
+            )
         # Cloned because callers own the lengths and edit them in place; backward needs the originals.
         ctx.save_for_backward(
             mel,

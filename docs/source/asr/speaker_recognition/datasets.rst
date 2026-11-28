@@ -60,3 +60,17 @@ Tarred Datasets
 Similarly to ASR, you can tar your audio files and use ASR Dataset class ``TarredAudioToSpeechLabelDataset`` (corresponding to the ``AudioToSpeechLabelDataset``) for this case.
 
 If you want to use tarred dataset, have a look at the ASR :ref:`Tarred Datasets <Tarred_Datasets>` section.
+
+External feature files
+----------------------
+
+``FeatureToLabelDataset`` accepts a JSONL manifest with entries such as:
+
+.. code-block:: json
+
+    {"feature_file": "/data/features.npy", "duration": 1.0, "label": "speaker_0"}
+
+Each feature file contains one numeric NumPy array (``.npy``) or a PyTorch tensor
+(``.pt`` or ``.pth``). NumPy object arrays, pickle files, and ``.npz`` archives are
+not supported. Save a selected archive array with ``numpy.save`` before using it
+as a feature file. PyTorch files use restricted tensor loading.

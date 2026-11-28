@@ -107,7 +107,6 @@ streaming:
   right_padding_size: 1.6                     # Right padding duration in seconds
   chunk_size: 4.8                             # Audio chunk size in seconds
   word_boundary_tolerance: 4                  # Tolerance for word boundaries
-  request_type: feature_buffer                # Type of request: frame or feature_buffer
   flush_size_in_secs: 0.0                     # Silence appended per stream so the decoder can flush its tail; 0.0 appends none
   stateful: true                              # Whether to use stateful processing
   padding_mode: right                         # Padding mode: left or right. How to pad frames to match the required buffer length
@@ -116,6 +115,7 @@ streaming:
 # ========================
 # Pipeline settings
 # ========================
+preload_audio: false                          # Set true to read all audio into host memory before the timed loop, so RTFx excludes disk I/O
 matmul_precision: high                     # Matrix multiplication precision: highest, high, medium
 log_level: 20                              # Logging level: 0 (NOTSET), 10 (DEBUG), 20 (INFO), 30 (WARNING), 40 (ERROR), 50 (CRITICAL)
 pipeline_type: buffered                    # Pipeline type: buffered, cache_aware

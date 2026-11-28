@@ -38,8 +38,9 @@ from typing import Any, Dict, List, Optional, Sequence, Union
 
 import torch
 import torch.distributed as dist
+import yaml
 from lightning.pytorch import Trainer
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig, OmegaConf, open_dict
 from torch import nn
 from tqdm import tqdm
 
@@ -48,6 +49,7 @@ from nemo.collections.asr.modules.online_encoder_graphs import OnlineGraphs
 from nemo.collections.asr.modules.transformer_encoder import TransformerEncoder
 from nemo.collections.asr.parts.packed_sequence import (
     PackedEncoderActivations,
+    forward_padded_fallback,
     pack_encoder_output,
     unpack_encoder_output,
 )
@@ -88,15 +90,26 @@ _ASR_ENCODER_TYPES = {
     "fastconformer": ConformerEncoder,
     "transformer": TransformerEncoder,
 }
+_MAX_PROBE_CONFIG_BYTES = 1024 * 1024
+# Sections of the obsolete three-expert bundle schema, which cannot be mapped onto the current one.
+_LEGACY_THREE_EXPERT_BUNDLE_KEYS = (
+    "speech_expert_cfg",
+    "speaker_expert_cfg",
+    "sound_expert_cfg",
+    "sortformer_modules_cfg",
+    "sound_ctc_head_cfg",
+)
 _SPEAKER_FEATURE_CONFIG_VERSION = 1
 _SPEAKER_FEATURE_MODE_CONTINUOUS = "continuous"
 _SPEAKER_FEATURE_MODE_THRESHOLD = "thresholded"
 _SPEAKER_FEATURE_MODES = frozenset({_SPEAKER_FEATURE_MODE_CONTINUOUS, _SPEAKER_FEATURE_MODE_THRESHOLD})
 _BUNDLE_CONFIG_OVERRIDE_KEYS = frozenset(
     {
+        "allow_padded_fallback",
         "asr_normalize_type",
         "chunk_size_seconds",
         "diar_normalize_type",
+        "diar_packed_rel_pos_attention",
         "frame_shift_seconds",
         "max_speaker_count",
         "missing_rttm_target",
@@ -406,6 +419,8 @@ class ParallelExpertEncoderPT(ModelPT):
             chunk_size_seconds=self._cfg.get("chunk_size_seconds", None),
             sync_max_audio_length=self._cfg.get("sync_max_audio_length", False),
             max_speaker_count=self._cfg.get("max_speaker_count", 8),
+            diar_packed_rel_pos_attention=self._cfg.get("diar_packed_rel_pos_attention", None),
+            allow_padded_fallback=self._cfg.get("allow_padded_fallback", False),
             # Timestamp artifacts are deployment inputs, not portable PEE architecture.
             ctc_timestamp_model_path=None,
         )
@@ -420,6 +435,7 @@ class ParallelExpertEncoderPT(ModelPT):
         self.encoder._bundle_config.speaker_activity_threshold = self.encoder.speaker_activity_threshold
         self.encoder._bundle_config.sync_max_audio_length = self.encoder.sync_max_audio_length
         self.encoder._bundle_config.max_speaker_count = self.encoder.max_speaker_count
+        self.encoder._bundle_config.allow_padded_fallback = self.encoder.allow_padded_fallback
         self.encoder._bundle_config.ctc_timestamp_model_path = None
 
     @staticmethod
@@ -434,6 +450,14 @@ class ParallelExpertEncoderPT(ModelPT):
         """
         missing = [key for key in ("asr_encoder_cfg", "diarization_model_cfg") if cfg.get(key, None) in (None, {}, "")]
         if missing:
+            legacy = [key for key in _LEGACY_THREE_EXPERT_BUNDLE_KEYS if key in cfg]
+            if legacy:
+                raise ValueError(
+                    f"ParallelExpertEncoder bundle uses the obsolete three-expert schema {legacy} "
+                    f"(NeMo {cfg.get('nemo_version', 'unknown')}), which is unsupported and cannot be converted. "
+                    "Use a bundle saved in the current schema (ParallelExpertEncoderPT.save_to_nemo), or a SALM "
+                    "checkpoint with an embedded encoder (model.pe_encoder_config + model.init_from_checkpoint)."
+                )
             raise ValueError(f"ParallelExpertEncoder bundle is missing required config sections {missing}.")
         _normalize_asr_encoder_type(cfg.get("asr_encoder_type", "fastconformer"))
 
@@ -441,7 +465,8 @@ class ParallelExpertEncoderPT(ModelPT):
     def is_pe_nemo(cls, nemo_path: str) -> bool:
         """
         Return whether a local archive declares a ParallelExpertEncoderPT target.
-        Only the ``target`` field of ``model_config.yaml`` is inspected; unreadable archives return ``False``.
+        Only a literal ``target`` field of ``model_config.yaml`` is inspected.
+        Unreadable archives, malformed configs, links, and configs over 1 MiB return ``False``.
 
         Args:
             nemo_path (str): Path to a candidate local ``.nemo`` file.
@@ -456,16 +481,30 @@ class ParallelExpertEncoderPT(ModelPT):
                 for member in archive.getmembers():
                     if os.path.basename(member.name) != "model_config.yaml":
                         continue
+                    if not member.isreg() or not 0 < member.size <= _MAX_PROBE_CONFIG_BYTES:
+                        return False
                     stream = archive.extractfile(member)
                     if stream is None:
                         return False
-                    cfg = OmegaConf.create(stream.read().decode("utf-8"))
-                    if not str(cfg.get("target", "")).endswith("ParallelExpertEncoderPT"):
+                    with stream:
+                        cfg = yaml.safe_load(stream.read(_MAX_PROBE_CONFIG_BYTES + 1).decode("utf-8"))
+                    if not isinstance(cfg, dict):
                         return False
-                    # Keep the released public probe target-based. Runtime loading
-                    # uses the schema resolver and remains strict.
-                    return True
-        except (tarfile.TarError, OSError) as error:
+                    target = cfg.get("target", "")
+                    return (
+                        isinstance(target, str) and "${" not in target and target.endswith("ParallelExpertEncoderPT")
+                    )
+        except (
+            tarfile.TarError,
+            OSError,
+            UnicodeError,
+            ValueError,
+            RecursionError,
+            yaml.YAMLError,
+            KeyError,
+            IndexError,
+            AttributeError,
+        ) as error:
             logging.warning("[ParallelExpertEncoder] Could not inspect %s: %s", nemo_path, error)
             return False
         return False
@@ -483,8 +522,10 @@ class ParallelExpertEncoderPT(ModelPT):
         Load a PE bundle and return its inner encoder.
         Local ``.nemo`` paths are read directly and their ``encoder.*`` tensors are loaded into a fresh
         shell; other identifiers go through :meth:`from_pretrained`. ``config_overrides`` is restricted
-        to runtime-semantic fields so it resolves legacy bundle ambiguity without allowing a recipe to
-        replace the saved encoder architecture accidentally, and it requires a local path.
+        to runtime-semantic fields (the speaker-feature contract, normalization, chunking, the packed
+        attention backend of the diarization branch, ``diar_packed_rel_pos_attention``) so it resolves legacy
+        bundle ambiguity without allowing a recipe to replace the saved encoder architecture accidentally,
+        and it requires a local path.
 
         Args:
             model_path_or_name (str): Local ``.nemo`` path or pretrained model name.
@@ -623,6 +664,7 @@ class ParallelExpertEncoderPT(ModelPT):
         template_cfg.chunk_size_seconds = encoder.chunk_size_seconds
         template_cfg.sync_max_audio_length = encoder.sync_max_audio_length
         template_cfg.max_speaker_count = encoder.max_speaker_count
+        template_cfg.allow_padded_fallback = encoder.allow_padded_fallback
         template_cfg.ctc_timestamp_model_path = None
         shell._cfg = template_cfg
         shell.save_to(output_nemo_path)
@@ -671,6 +713,8 @@ class ParallelExpertEncoder(nn.Module):
         max_speaker_count: int = 8,
         ctc_timestamp_model_path: Optional[str] = None,
         ctc_timestamp_alignment: Optional[Dict[str, Any]] = None,
+        diar_packed_rel_pos_attention: Optional[str] = None,
+        allow_padded_fallback: bool = False,
     ):
         """
         Initialize the ASR and diarization experts and their fusion layers.
@@ -702,8 +746,21 @@ class ParallelExpertEncoder(nn.Module):
             max_speaker_count (int): Fixed speaker dimension retained for boolean diarization timestamps.
             ctc_timestamp_model_path (Optional[str]): Runtime-only lightweight CTC timestamp artifact path.
             ctc_timestamp_alignment (Optional[Dict[str, Any]]): Timestamp aligner options, including backend selection.
+            diar_packed_rel_pos_attention (Optional[str]): Backend of the diarization encoder's ``rel_pos``
+                attention over packed sequences, ``'triton'`` or ``'flex'``, replacing the
+                ``packed_rel_pos_attention`` of its config; a runtime override of a bundle
+                (``config_overrides`` of :meth:`ParallelExpertEncoderPT.load_from_nemo`, the
+                ``pe_encoder_overrides`` of a SALM recipe), which leaves the saved architecture and weights
+                as they are. ``None`` keeps the config's backend.
+            allow_padded_fallback (bool): Whether ``forward_sequence_packed`` may run a branch encoder
+                without a sequence-packed form for its configuration on the padded batch, with one warning.
+                By default such a branch is an error with the encoder's reason, not the slower path.
+                The Sortformer modules after the diarization encoder always run padded.
         """
         super().__init__()
+        if not isinstance(allow_padded_fallback, bool):
+            raise TypeError(f"allow_padded_fallback must be a bool, got {allow_padded_fallback!r}.")
+        self.allow_padded_fallback = allow_padded_fallback
 
         # Lazy import: SortformerEncLabelModel imports from asr.modules.
         from nemo.collections.asr.models.sortformer_diar_models import SortformerEncLabelModel
@@ -726,6 +783,20 @@ class ParallelExpertEncoder(nn.Module):
         self._feat_in = self.asr_encoder._feat_in
 
         diarization_model_cfg = _clone_config(diarization_model_cfg)
+        self.diar_packed_rel_pos_attention = diar_packed_rel_pos_attention
+        if diar_packed_rel_pos_attention is not None:
+            if diar_packed_rel_pos_attention not in ("triton", "flex"):
+                raise ValueError(
+                    f"diar_packed_rel_pos_attention must be 'triton' or 'flex', got {diar_packed_rel_pos_attention!r}."
+                )
+            diar_encoder_target = str(diarization_model_cfg.encoder.get("_target_", ""))
+            if not diar_encoder_target.endswith("ConformerEncoder"):
+                raise ValueError(
+                    "diar_packed_rel_pos_attention selects the packed rel_pos attention backend of a ConformerEncoder "
+                    f"diarization branch; the diarization encoder is {diar_encoder_target or 'unnamed'}."
+                )
+            with open_dict(diarization_model_cfg.encoder):
+                diarization_model_cfg.encoder.packed_rel_pos_attention = diar_packed_rel_pos_attention
         if diar_normalize_type is None:
             diar_normalize_type = diarization_model_cfg.get("preprocessor", {}).get("normalize", None)
         self.diar_normalize_type = diar_normalize_type
@@ -984,8 +1055,12 @@ class ParallelExpertEncoder(nn.Module):
     ) -> PackedEncoderActivations:
         """
         Run an encoder token-flat, optionally splitting after feature stacking.
-        Encoders without ``forward_sequence_packed`` fall back to a padded forward and are
-        re-packed. When a chunk size is set and an utterance exceeds it, feature stacking runs
+        Encoders without ``forward_sequence_packed``, or whose ``supports_sequence_packed_output``
+        denies it for their configuration (a ``ConformerEncoder`` training with attention dropout
+        on a packed attention backend without it, FlexAttention, for one;
+        its ``sequence_packed_unsupported_reason`` lists them), raise unless ``allow_padded_fallback`` is set;
+        then they fall back to a padded forward and are re-packed, with a warning.
+        When a chunk size is set and an utterance exceeds it, feature stacking runs
         once over each full utterance, and the encoder layers then see each chunk as an
         independent sequence. Chunking requires ``subsampling='feature_stacking'``.
 
@@ -999,12 +1074,15 @@ class ParallelExpertEncoder(nn.Module):
         """
         max_tokens = self._chunk_size_tokens(chunk_size_seconds)
         packed_forward = getattr(encoder, "forward_sequence_packed", None)
-        if not callable(packed_forward):
+        if not callable(packed_forward) or not getattr(encoder, "supports_sequence_packed_output", True):
             if max_tokens is not None and features.max_seqlen > max_tokens:
-                raise TypeError(f"{type(encoder).__name__} does not support packed independent chunking.")
-            padded = unpack_encoder_output(features, total_length=features.padded_length).transpose(1, 2)
-            encoded, encoded_lengths = encoder(audio_signal=padded, length=features.lengths)
-            return pack_encoder_output(encoded.transpose(1, 2), encoded_lengths)
+                reason = getattr(encoder, "sequence_packed_unsupported_reason", None)
+                reason = reason() if callable(reason) else None
+                raise TypeError(
+                    f"{type(encoder).__name__} does not support packed independent chunking"
+                    + (f" in this configuration: {reason}" if reason else ".")
+                )
+            return forward_padded_fallback(encoder, features, allowed=self.allow_padded_fallback)
         if max_tokens is None or features.max_seqlen <= max_tokens:
             return packed_forward(features, features.lengths)
 
@@ -1670,7 +1748,8 @@ class ParallelExpertEncoder(nn.Module):
         """
         Detach reduced-precision request-owned inputs needed after text decoding.
         ASR states are stored in BF16 unless already BF16 or FP16. Native diarization probabilities
-        are thresholded at 0.5 into boolean labels padded to ``max_speaker_count`` speakers.
+        use the checkpoint aligner's ``vad_threshold`` (or constructor/explicit options without an artifact)
+        to produce boolean labels padded to ``max_speaker_count`` speakers.
 
         Args:
             asr_encoded (torch.Tensor): ASR states shaped ``(B, D, T)``.
@@ -1696,7 +1775,21 @@ class ParallelExpertEncoder(nn.Module):
             dtype=torch.bool,
             device=diarization_probs.device,
         )
-        diarization_labels[:, : diarization_probs.shape[-1]] = (diarization_probs > 0.5).transpose(1, 2)
+        from nemo.collections.speechlm2.parts.ctc_timestamp_utils import (
+            get_ctc_timestamp_aligner,
+            load_word_alignment_parameters,
+        )
+
+        options = dict(getattr(self, 'ctc_timestamp_alignment', {}) or {})
+        threshold = options.get('vad_threshold')
+        artifact_path = getattr(self, 'ctc_timestamp_model_path', None)
+        if artifact_path:
+            threshold = get_ctc_timestamp_aligner(self, artifact_path, asr_encoded.device).vad_threshold
+        elif threshold is None:
+            threshold = load_word_alignment_parameters(options.get('word_alignment_parameters'))['vad_threshold']
+        if not 0 <= threshold <= 1:
+            raise ValueError('vad_threshold must be between zero and one.')
+        diarization_labels[:, : diarization_probs.shape[-1]] = (diarization_probs > threshold).transpose(1, 2)
         return CTCTimestampInputs(
             asr_encoded=asr_encoded.detach().to(dtype=storage_dtype),
             asr_encoded_lengths=asr_encoded_lengths.detach(),

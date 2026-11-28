@@ -5,6 +5,9 @@ The NeMo SpeechLM vLLM plugin serves exported SpeechLM checkpoints with
 their speech encoder and language backbone. It supports ordinary generation
 and checkpoint-backed speculative decoding.
 
+For a complete released-model example, including checkpoint download, server launch, transcription,
+and speaker-attributed word timestamps, see :doc:`nemotron_transcribe`.
+
 CTC word timestamp alignment
 ----------------------------
 
@@ -28,8 +31,8 @@ opt-in and requires a CTC adapter.
 Installation
 ------------
 
-Install the ASR runtime and vLLM 0.32.0, pinned by NeMo's ``vllm`` extra.
-vLLM 0.32 requires Python 3.11 or newer:
+Install the ASR runtime and vLLM 0.33.0, pinned by NeMo's ``vllm`` extra.
+vLLM 0.33 requires Python 3.11 or newer:
 
 .. code-block:: bash
 

@@ -30,6 +30,8 @@ class CacheAwareCTCInferenceWrapper(CacheAwareASRInferenceWrapper):
     Provides a unified interface to work with Cache-Aware CTC models.
     """
 
+    decoder_type = 'ctc'
+
     def __post_init__(self) -> None:
         """
         Additional post initialization step

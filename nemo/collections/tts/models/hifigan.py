@@ -26,13 +26,15 @@ from omegaconf import DictConfig, OmegaConf, open_dict
 from nemo.collections.tts.losses.hifigan_losses import DiscriminatorLoss, FeatureMatchingLoss, GeneratorLoss
 from nemo.collections.tts.models.base import Vocoder
 from nemo.collections.tts.modules.hifigan_modules import MultiPeriodDiscriminator, MultiScaleDiscriminator
+from nemo.collections.tts.one_logger import TTSThroughputPolicy
 from nemo.collections.tts.parts.utils.callbacks import LoggingCallback
-from nemo.collections.tts.parts.utils.helpers import get_batch_size, get_num_workers, plot_spectrogram_to_numpy
+from nemo.collections.tts.parts.utils.helpers import get_max_steps, plot_spectrogram_to_numpy
 from nemo.core.classes import Exportable
 from nemo.core.classes.common import PretrainedModelInfo, safe_instantiate, typecheck
 from nemo.core.neural_types.elements import AudioSignal, MelSpectrogramType
 from nemo.core.neural_types.neural_type import NeuralType
-from nemo.core.optim.lr_scheduler import compute_max_steps, prepare_lr_scheduler
+from nemo.core.optim.lr_scheduler import prepare_lr_scheduler
+from nemo.lightning.speech_throughput import register_throughput_policy
 from nemo.utils import logging, model_utils
 
 HAVE_WANDB = True
@@ -42,6 +44,7 @@ except ModuleNotFoundError:
     HAVE_WANDB = False
 
 
+@register_throughput_policy(TTSThroughputPolicy)
 class HifiGanModel(Vocoder, Exportable):
     """
     HiFi-GAN model (https://arxiv.org/abs/2010.05646) that is used to generate audio from mel spectrogram.
@@ -83,24 +86,7 @@ class HifiGanModel(Vocoder, Exportable):
 
     @property
     def max_steps(self):
-        if "max_steps" in self._cfg:
-            return self._cfg.get("max_steps")
-
-        if "max_epochs" not in self._cfg:
-            raise ValueError("Must specify 'max_steps' or 'max_epochs'.")
-
-        if "steps_per_epoch" in self._cfg:
-            return self._cfg.max_epochs * self._cfg.steps_per_epoch
-
-        return compute_max_steps(
-            max_epochs=self._cfg.max_epochs,
-            accumulate_grad_batches=self.trainer.accumulate_grad_batches,
-            limit_train_batches=self.trainer.limit_train_batches,
-            num_workers=get_num_workers(self.trainer),
-            num_samples=len(self._train_dl.dataset),
-            batch_size=get_batch_size(self._train_dl),
-            drop_last=self._train_dl.drop_last,
-        )
+        return get_max_steps(self._cfg, self.trainer, self._train_dl)
 
     @staticmethod
     def get_warmup_steps(max_steps, warmup_steps, warmup_ratio):

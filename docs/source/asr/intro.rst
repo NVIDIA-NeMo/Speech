@@ -2,7 +2,11 @@ Automatic Speech Recognition (ASR)
 ==================================
 
 Automatic Speech Recognition (ASR), also known as Speech To Text (STT), refers to the problem of automatically transcribing spoken language.
-NeMo provides open-sourced pretrained models in 25+ languages. Browse the full list in :doc:`ASR Model Checkpoints <./asr_checkpoints>`.
+NeMo provides pretrained speech recognition models covering 40 languages.
+Browse the full list in :doc:`ASR Model Checkpoints <./asr_checkpoints>`.
+
+For instruction-controlled offline transcription, speaker-attributed transcripts, and audio understanding,
+start with :doc:`Nemotron 3.5 Transcribe </speechlm2/nemotron_transcribe>` in the SpeechLM2 collection.
 
 
 Quick Start
@@ -33,7 +37,7 @@ See :doc:`Inference <./inference>` for full details on timestamps, long audio, s
 Key Features
 ------------
 
-**50+ Pretrained Models** — NeMo offers open-source checkpoints across 14+ languages, available on `HuggingFace <https://huggingface.co/nvidia>`__ and `NGC <https://catalog.ngc.nvidia.com/models?query=nemo>`__. Browse the full list in :doc:`All Checkpoints <./asr_checkpoints>`.
+**Pretrained Models** — NeMo offers checkpoints covering 40 languages, available on `HuggingFace <https://huggingface.co/nvidia>`__ and `NGC <https://catalog.ngc.nvidia.com/models?query=nemo>`__. Browse the full list in :doc:`All Checkpoints <./asr_checkpoints>`.
 
 **Timestamps** — Character, word, and segment-level timestamps are supported for all Parakeet models with CTC, RNNT, and TDT decoders.
 
@@ -47,7 +51,7 @@ Key Features
 
 **Multitalker** — Streaming multi-speaker ASR with speaker kernel injection handles overlapping speech in real time. See `Multitalker Parakeet <https://huggingface.co/nvidia/multitalker-parakeet-streaming-0.6b-v1>`__.
 
-**Long Audio** — Inference on audio over 1 hour via local attention or buffered chunked processing.
+**Long Audio** — Inference on audio over 1 hour via planned chunking (recommended), local attention, or buffered chunked processing.
 
 **Decoder Types** — NeMo supports CTC, RNN-T, TDT, AED, and Hybrid decoders. For a comparison of decoder types, see :ref:`asr_language_modeling_and_customization`.
 

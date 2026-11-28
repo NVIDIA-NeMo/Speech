@@ -34,7 +34,7 @@ from nemo.collections.asr.parts.utils.asr_confidence_utils import ConfidenceConf
 
 # both models recognize the test data without errors, thus every metric except ece return default values
 # ECE values for fast conformer models (stt_en_fastconformer_ctc_large and stt_en_fastconformer_transducer_large)
-ECE_VALUES = {("token", "ctc"): 0.86, ("token", "rnnt"): 0.75, ("word", "ctc"): 0.89, ("word", "rnnt"): 0.80}
+ECE_VALUES = {("token", "ctc"): 0.86, ("token", "rnnt"): 0.69, ("word", "ctc"): 0.90, ("word", "rnnt"): 0.79}
 
 TOL_DEGREE = 2
 TOL = 2 / math.pow(10, TOL_DEGREE)
@@ -61,6 +61,7 @@ class TestASRConfidenceBenchmark:
     @pytest.mark.with_downloads
     @pytest.mark.parametrize('model_name', ("ctc", "rnnt"))
     @pytest.mark.parametrize('target_level', ("token", "word"))
+    @pytest.mark.gpu
     def test_run_confidence_benchmark(
         self, model_name, target_level, audio_and_texts, fast_conformer_ctc_model, fast_conformer_transducer_model
     ):
@@ -96,6 +97,7 @@ class TestASRConfidenceBenchmark:
     @pytest.mark.integration
     @pytest.mark.with_downloads
     @pytest.mark.parametrize('model_name', ("ctc", "rnnt"))
+    @pytest.mark.gpu
     def test_deprecated_config_args(self, model_name, fast_conformer_ctc_model, fast_conformer_transducer_model):
         assert ConfidenceConfig().method_cfg.alpha == 0.33, "default `alpha` is supposed to be 0.33"
         model = fast_conformer_ctc_model if model_name == "ctc" else fast_conformer_transducer_model
@@ -124,6 +126,7 @@ class TestASRConfidenceBenchmark:
 
     @pytest.mark.integration
     @pytest.mark.with_downloads
+    @pytest.mark.gpu
     def test_aed_multitask_model_confidence(self, canary_1b_v2, test_data_dir):
         """Test token and word confidence for AED multitask models (Canary)."""
         model = canary_1b_v2

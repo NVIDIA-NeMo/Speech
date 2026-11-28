@@ -665,3 +665,78 @@ def test_multiturn_lhotse_dataloader_omits_alignment_prior():
         assert batch['agent_mask'].sum().item() > 0
         # Ensure the alignment prior is not present
         assert 'align_prior_matrix' not in batch
+
+
+@pytest.mark.parametrize("mode", ["map", "iterable"])
+def test_multiturn_lhotse_dataloader_resumes_random_context_slices(mode):
+    """The multiturn loader must expose the dataset RNG to StatefulDataLoader so resumed batches match exactly."""
+    from lhotse import CutSet
+    from lhotse.utils import fastcopy
+
+    from tests.collections.tts.data.test_magpietts_dataset_lhotse import _cached_codes, _memory_temporal_array
+
+    with torch.device('cpu'):
+        cfg = tiny_easy_magpie_cfg(
+            {'use_bpe_char_tokenizer': False, 'load_cached_codes_if_available': True, 'use_multiturn_dataset': True}
+        )
+        cfg.text_tokenizers = {
+            'english_char': {
+                '_target_': 'nemo.collections.common.tokenizers.text_to_speech.tts_tokenizers.EnglishCharsTokenizer'
+            }
+        }
+        cfg.text_conditioning_tokenizer_name = 'english_char'
+        cfg.context_duration_min = 0.1
+        cfg.context_duration_max = 0.6
+        model = _make_easy_magpie_model(cfg)
+
+        template = next(iter(_multiturn_cutset()))
+        cuts = []
+        for i in range(6):
+            cut = fastcopy(template, id=f"multiturn-{i}")
+            cut.tokenizer_names = ['english_char']
+            # 40 codec frames of distinguishable context, so each read slices a random duration and offset.
+            cut.context_codes = _memory_temporal_array(_cached_codes(num_frames=40, offset=i))
+            cuts.append(cut)
+        cuts = CutSet.from_cuts(cuts)
+        dataset_cfg = OmegaConf.create(
+            {
+                'use_lhotse': True,
+                'volume_norm': False,
+                'dataset': {
+                    'batch_size': 2,
+                    'shuffle': True,
+                    'seed': 0,
+                    'shard_seed': 0,
+                    'num_workers': 0,
+                    'use_stateful_dataloader': True,
+                    'force_map_dataset': mode == 'map',
+                    'force_iterable_dataset': mode == 'iterable',
+                },
+            }
+        )
+
+        def make_loader():
+            with patch(
+                'nemo.collections.common.data.lhotse.dataloader.read_cutset_from_config', return_value=(cuts, False)
+            ):
+                model.setup_training_data(dataset_cfg)
+            return model.train_dataloader()
+
+        def summarize(batch):
+            return (
+                list(batch['sample_id']),
+                batch['context_audio_codes'].tolist(),
+                batch['context_audio_codes_lens'].tolist(),
+            )
+
+        uninterrupted = [summarize(batch) for batch in make_loader()]
+        loader = make_loader()
+        it = iter(loader)
+        next(it)
+        state = loader.state_dict()
+        loader = make_loader()
+        loader.load_state_dict(state)
+        resumed = [summarize(batch) for batch in loader]
+
+        assert len(uninterrupted) == 3
+        assert resumed == uninterrupted[1:]

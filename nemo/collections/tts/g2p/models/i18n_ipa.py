@@ -14,7 +14,6 @@
 # limitations under the License.
 
 import pathlib
-import random
 import re
 from collections import defaultdict
 from typing import Callable, Dict, List, Optional, Set, Tuple, Union
@@ -109,7 +108,6 @@ class IpaG2p(BaseG2p):
         self.grapheme_prefix = grapheme_prefix
         self.phoneme_probability = phoneme_probability
         self.locale = locale
-        self._rng = random.Random()
 
         if locale is not None:
             validate_locale(locale)
@@ -390,7 +388,7 @@ class IpaG2p(BaseG2p):
             return list(word), True
 
         # Keep graphemes of a word with a probability.
-        if self.phoneme_probability is not None and self._rng.random() > self.phoneme_probability:
+        if self.phoneme_probability is not None and self.rng.random() > self.phoneme_probability:
             return self._prepend_prefix_for_one_word(word), True
 
         # Heteronyms

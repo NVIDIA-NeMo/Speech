@@ -39,7 +39,7 @@ from nemo.collections.asr.parts.utils.longform_inference import (
     collate_audio_chunks,
 )
 from nemo.collections.asr.parts.utils.rnnt_utils import Hypothesis
-from nemo.collections.common.data.utils import move_data_to_device
+from nemo.collections.common.data.utils import is_dataloader, move_data_to_device
 from nemo.lightning.speech_throughput import register_throughput_policy
 from nemo.utils import logging, logging_mode
 
@@ -401,7 +401,7 @@ class TranscriptionMixin(ABC):
                 transcribe_cfg._internal.temp_dir = tmpdir
 
                 # Create a DataLoader if not already present
-                if not isinstance(audio, DataLoader):
+                if not is_dataloader(audio):
                     dataloader = self._transcribe_input_processing(audio, transcribe_cfg)
                 else:
                     dataloader = audio

@@ -211,6 +211,26 @@ def test_register_defaults_vllm_workers_to_spawn(monkeypatch, preset, expected):
 
 
 @pytest.mark.skipif(not _HAS_CONFIG, reason="SpeechLM vLLM plugin not available")
+def test_patched_override_forwards_native_hook_arguments(monkeypatch):
+    """vLLM 0.33 calls the hook with ``transformers_mtp_overrides``; unrelated configs must pass it through."""
+    from nemo.collections.speechlm2.vllm import salm as salm_module
+
+    native_calls = []
+
+    def _recording_native(cfg, *args, **kwargs):
+        native_calls.append((cfg, args, kwargs))
+        return cfg
+
+    monkeypatch.setattr(salm_module, "_ORIGINAL_VLLM_HF_CONFIG_OVERRIDE", _recording_native)
+    hf_cfg = SimpleNamespace(model_type="unrelated")
+    overrides = {"n_predict": 2}
+    result = salm_module._nemo_speechlm_mtp_hf_config_override(hf_cfg, transformers_mtp_overrides=overrides)
+
+    assert result is hf_cfg
+    assert native_calls == [(hf_cfg, (), {"transformers_mtp_overrides": overrides})]
+
+
+@pytest.mark.skipif(not _HAS_CONFIG, reason="SpeechLM vLLM plugin not available")
 def test_dflash_alias_registration_supports_class_backed_registry():
     class NativeModel:
         pass
@@ -2451,24 +2471,6 @@ class TestMTPPlugin:
         assert result is hf_cfg
         assert original_calls == [hf_cfg]
         assert salm_module._ORIGINAL_VLLM_HF_CONFIG_OVERRIDE is _recording_native
-
-    def test_patched_override_forwards_native_hook_arguments(self, monkeypatch):
-        """vLLM 0.33 calls the hook with ``transformers_mtp_overrides``; unrelated configs must pass it through."""
-        from nemo.collections.speechlm2.vllm import salm as salm_module
-
-        native_calls = []
-
-        def _recording_native(cfg, *args, **kwargs):
-            native_calls.append((cfg, args, kwargs))
-            return cfg
-
-        monkeypatch.setattr(salm_module, "_ORIGINAL_VLLM_HF_CONFIG_OVERRIDE", _recording_native)
-        hf_cfg = self._HFConfigLike(model_type="unrelated")
-        overrides = {"n_predict": 2}
-        result = salm_module._nemo_speechlm_mtp_hf_config_override(hf_cfg, transformers_mtp_overrides=overrides)
-
-        assert result is hf_cfg
-        assert native_calls == [(hf_cfg, (), {"transformers_mtp_overrides": overrides})]
 
     def test_patched_override_rejects_missing_native_hook(self, monkeypatch):
         """A corrupted install must fail clearly instead of recursing into our override."""

@@ -151,7 +151,7 @@ def _check_stateful_on(cfg: DictConfig):
 
 
 def _check_indexed_implies_root(cfg: DictConfig):
-    indexed = cfg.get("indexed", False)
+    indexed = _effective_indexed(cfg)
     indexes_root = cfg.get("indexes_root", None)
     if not indexed:
         return SKIP, "train_ds.indexed != True; check not applicable", {}
@@ -238,15 +238,13 @@ def _check_constant_time_leaves(cfg: DictConfig):
     one that admits indexed mode, AND the indexed flag must propagate
     (top-level ``indexed: true`` OR per-leaf override)."""
     stateful = cfg.get("use_stateful_dataloader", False) is True
-    top_indexed = cfg.get("indexed", False) is True
     non_indexable: list[dict] = []
     streaming: list[dict] = []
-    for leaf in _iter_leaf_nodes(cfg):
+    for leaf, leaf_indexed in _iter_leaf_nodes_with_indexed(cfg):
         typ = leaf.get("type")
         if typ in _STREAMING_ONLY_TYPES:
             non_indexable.append({"type": typ, "corpus": leaf.get("corpus")})
             continue
-        leaf_indexed = leaf.get("indexed", top_indexed) is True
         if not leaf_indexed:
             streaming.append({"type": typ, "corpus": leaf.get("corpus")})
     severity_status = FAIL if stateful else WARN
@@ -306,10 +304,11 @@ def _check_mux_seed_not_randomized(cfg: DictConfig):
 
 
 def _check_slice_length_vs_indexed(cfg: DictConfig):
-    if not cfg.get("indexed", False):
-        return SKIP, "train_ds.indexed != True; check not applicable", {}
+    indexed_leaves = [leaf for leaf, indexed in _iter_leaf_nodes_with_indexed(cfg) if indexed]
+    if not indexed_leaves:
+        return SKIP, "no source is read with indexed=True; check not applicable", {}
     offenders: list[dict] = []
-    for leaf in _iter_leaf_nodes(cfg):
+    for leaf in indexed_leaves:
         if leaf.get("slice_length") is not None:
             offenders.append({"type": leaf.get("type"), "corpus": leaf.get("corpus")})
     if offenders:
@@ -325,10 +324,11 @@ def _check_slice_length_vs_indexed(cfg: DictConfig):
 
 
 def _check_cut_map_fns_vs_indexed(cfg: DictConfig):
-    if not cfg.get("indexed", False):
-        return SKIP, "train_ds.indexed != True; check not applicable", {}
+    indexed_leaves = [leaf for leaf, indexed in _iter_leaf_nodes_with_indexed(cfg) if indexed]
+    if not indexed_leaves:
+        return SKIP, "no source is read with indexed=True; check not applicable", {}
     offenders: list[dict] = []
-    for leaf in _iter_leaf_nodes(cfg):
+    for leaf in indexed_leaves:
         if leaf.get("cut_map_fns"):
             offenders.append({"type": leaf.get("type"), "corpus": leaf.get("corpus")})
     if offenders:
@@ -388,7 +388,7 @@ def _check_multi_config_flags(cfg: DictConfig):
         return SKIP, "multi_config != True; check not applicable", {}
     # Static structural check: at least one sub-config must carry the
     # indexed/indexes_root flags (or the top-level must have them so they propagate).
-    top_indexed = cfg.get("indexed")
+    top_indexed = _effective_indexed(cfg)
     top_root = cfg.get("indexes_root")
     if top_indexed is not None and top_root is not None:
         return PASS, "top-level indexed+indexes_root will propagate via overwriting_opts", {}
@@ -398,7 +398,8 @@ def _check_multi_config_flags(cfg: DictConfig):
     missing = [
         i
         for i, sc in enumerate(sub_cfgs)
-        if isinstance(sc, (dict, DictConfig)) and (sc.get("indexed") is None or sc.get("indexes_root") is None)
+        if isinstance(sc, (dict, DictConfig))
+        and ((sc.get("indexed") is None and top_indexed is None) or sc.get("indexes_root") is None)
     ]
     if missing:
         return (
@@ -522,37 +523,58 @@ _TRANSFORM_TYPES = frozenset(
 )
 
 
+def _effective_indexed(cfg: DictConfig) -> Optional[bool]:
+    """Top-level ``indexed`` as the dataloader resolves it: unset means ``True`` with the stateful dataloader."""
+    indexed = cfg.get("indexed")
+    if indexed is None and cfg.get("use_stateful_dataloader", False) is True:
+        return True
+    return indexed
+
+
 def _iter_leaf_nodes(cfg: DictConfig) -> Iterable[DictConfig]:
     """Yield each leaf-source dict reachable from ``cfg.input_cfg``."""
-    yield from _walk(cfg.get("input_cfg"))
+    for leaf, _ in _walk(cfg.get("input_cfg"), _effective_indexed(cfg)):
+        yield leaf
 
 
-def _walk(node: Any) -> Iterable[DictConfig]:
+def _iter_leaf_nodes_with_indexed(cfg: DictConfig) -> Iterable[tuple[DictConfig, bool]]:
+    """Yield ``(leaf, indexed)`` with each leaf's effective ``indexed`` value, as the dataloader resolves it.
+
+    Like ``read_dataset_config``'s propagation, an absent or ``null`` value inherits from the enclosing entry
+    (groups, conversion entries, external YAML references); the stateful default applies only at the root.
+    """
+    for leaf, indexed in _walk(cfg.get("input_cfg"), _effective_indexed(cfg)):
+        yield leaf, indexed is True
+
+
+def _walk(node: Any, inherited: Optional[bool]) -> Iterable[tuple[DictConfig, Optional[bool]]]:
     if node is None:
         return
     if isinstance(node, (list, ListConfig)):
         for sub in node:
-            yield from _walk(sub)
+            yield from _walk(sub, inherited)
         return
     if isinstance(node, str):
         # input_cfg reference to another YAML file — try to load it.
         loaded = _try_load_yaml(node)
         if loaded is not None:
-            yield from _walk(loaded)
+            yield from _walk(loaded, inherited)
         return
     if not isinstance(node, (dict, DictConfig)):
         return
+    own = node.get("indexed")
+    indexed = inherited if own is None else own
     typ = node.get("type")
     if typ in _LEAF_TYPES or typ in _STREAMING_ONLY_TYPES:
-        yield node
+        yield node, indexed
         return
     if typ in _TRANSFORM_TYPES or typ is None:
         if "input_cfg" in node:
-            yield from _walk(node["input_cfg"])
+            yield from _walk(node["input_cfg"], indexed)
         return
     # Unknown type — yield it so it's at least counted, but caller
     # should be defensive about its keys.
-    yield node
+    yield node, indexed
 
 
 def _iter_mux_groups(cfg: DictConfig) -> Iterable[tuple[str, list]]:

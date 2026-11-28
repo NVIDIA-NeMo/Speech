@@ -591,6 +591,8 @@ def nemo_tarred_duplicate_bucket_manifest(tmp_audio_root) -> tuple[list[Path], l
                         "cut_id": cut.id,
                     }
                 )
+        create_jsonl_index(manifest_path)
+        indexed_adapters.create_tar_index(tar_path, Path(f"{tar_path}.idx"))
         manifest_paths.append(manifest_path)
         tar_paths.append(tar_path)
     return manifest_paths, tar_paths
@@ -688,6 +690,7 @@ def text_jsonl(tmp_path) -> Path:
     with open(p, "w") as f:
         for i in range(N_CUTS):
             f.write(json.dumps({"id": f"t-{i:04d}", "text": f"line {i}"}) + "\n")
+    create_jsonl_index(p)
     return p
 
 
@@ -713,6 +716,7 @@ def sft_jsonl(tmp_path) -> Path:
     with open(p, "w") as f:
         for i in range(N_CUTS):
             f.write(json.dumps({"id": f"sft-{i:04d}", "marker": i}) + "\n")
+    create_jsonl_index(p)
     return p
 
 
@@ -765,6 +769,7 @@ def mm_conversation_jsonl(tmp_audio_root) -> Path:
                 )
                 + "\n"
             )
+    create_jsonl_index(p)
     return p
 
 
@@ -813,6 +818,7 @@ def test_nemo_multimodal_indexed_skipme_is_canonical_filter(mm_conversation_json
     rows[2]["_skipme"] = ""
     rows[3]["custom"] = {"_skipme": 0}
     save_to_jsonl(rows, mm_conversation_jsonl)
+    create_jsonl_index(mm_conversation_jsonl)  # the rewrite invalidated the fixture's index
 
     for skip_missing_manifest_entries in (False, True):
         adapter = text_adapters.NeMoMultimodalConversationJsonlAdapter(
@@ -867,6 +873,7 @@ def sharegpt_conversation_jsonl(tmp_audio_root) -> Path:
                 )
                 + "\n"
             )
+    create_jsonl_index(p)
     return p
 
 

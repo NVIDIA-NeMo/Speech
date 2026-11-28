@@ -206,6 +206,9 @@ class LazyNeMoIterator(IteratorNode):
 
             from lhotse.indexing import index_file_path
 
+            from nemo.collections.common.data.lhotse.indexed_adapters import require_prebuilt_indexes
+
+            require_prebuilt_indexes(paths, indexes_root)
             seed = _resolve_indexed_shard_seed(shard_seed, used=shuffle_shards and len(paths) > 1)
             indexed_sources = [
                 LazyIndexedManifestIterator(
@@ -693,7 +696,10 @@ class LazyNeMoTarredIterator(IteratorNode):
         """Build per-shard IndexedJsonlReaders + audio-tar index for indexed/random access."""
         from lhotse.indexing import IndexedJsonlReader, index_file_path
 
-        from nemo.collections.common.data.lhotse.indexed_adapters import IndexedTarMemberReader
+        from nemo.collections.common.data.lhotse.indexed_adapters import (
+            IndexedTarMemberReader,
+            require_prebuilt_indexes,
+        )
 
         if self.extra_fields:
             raise ValueError(
@@ -704,13 +710,22 @@ class LazyNeMoTarredIterator(IteratorNode):
         if self.slice_length is not None:
             raise ValueError("LazyNeMoTarredIterator(indexed=True) does not support 'slice_length'.")
 
+        # Check every index up front so that the error lists all missing files at once.
+        if len(self.paths) == 1:
+            required = [self.paths[0]]
+        else:
+            required = list(dict.fromkeys(self._shard_key_to_manifest_path[sid] for sid in self.shard_id_to_tar_path))
+        if not self.use_ais_get_batch:
+            required += list(self.shard_id_to_tar_path.values())
+        require_prebuilt_indexes(required, self.indexes_root)
+
         # In USE_AIS_GET_BATCH mode we never open the tar files locally — audio is
         # fetched lazily via URL/file AudioSource by AudioSamples (typically batched).
         self._tar_readers: dict[ShardKey, IndexedTarMemberReader] = {}
         if not self.use_ais_get_batch:
             for sid, tar_path in self.shard_id_to_tar_path.items():
                 self._tar_readers[sid] = IndexedTarMemberReader(
-                    tar_path, idx_path=index_file_path(tar_path, self.indexes_root)
+                    tar_path, idx_path=index_file_path(tar_path, self.indexes_root), auto_create_index=False
                 )
         # Tar position in ``self.tar_paths`` order -> shard key (used by aggregate route sidecars).
         self._tar_position_keys: list[ShardKey] = list(self.shard_id_to_tar_path.keys())
@@ -727,7 +742,7 @@ class LazyNeMoTarredIterator(IteratorNode):
             self._manifest_keys: list = [None]
             self._manifest_paths = {None: manifest_path}
             self._cuts_readers[None] = IndexedJsonlReader(
-                manifest_path, index_path=index_file_path(manifest_path, self.indexes_root)
+                manifest_path, index_path=index_file_path(manifest_path, self.indexes_root), auto_create_index=False
             )
             self._init_aggregate_tar_routes(manifest_path, len(self._cuts_readers[None]))
         else:
@@ -743,7 +758,9 @@ class LazyNeMoTarredIterator(IteratorNode):
             for sid in self._manifest_keys:
                 manifest_path = self._manifest_paths[sid]
                 self._cuts_readers[sid] = IndexedJsonlReader(
-                    manifest_path, index_path=index_file_path(manifest_path, self.indexes_root)
+                    manifest_path,
+                    index_path=index_file_path(manifest_path, self.indexes_root),
+                    auto_create_index=False,
                 )
                 if not self.use_ais_get_batch:
                     self._tar_ordinal_routes[sid] = self._load_shard_tar_route(sid, len(self._cuts_readers[sid]))

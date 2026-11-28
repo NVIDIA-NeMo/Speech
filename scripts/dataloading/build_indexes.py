@@ -462,7 +462,7 @@ def discover(
         _discover_shar(entry.get("shar_path"), jobs, indexes_root)
         return
 
-    if typ in ("txt_jsonl", "nemotron_text_converation", "materialized_sft_messages"):
+    if typ in ("txt_jsonl", "nemo_sft_jsonl", "nemotron_text_converation", "materialized_sft_messages"):
         _discover_paths(entry.get("paths"), jobs, indexes_root)
         return
 

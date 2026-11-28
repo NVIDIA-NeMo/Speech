@@ -28,9 +28,11 @@ import pytest
 import torch
 from lhotse import Recording
 from lhotse.dataset import AudioSamples
+from lhotse.indexing import create_jsonl_index
 from lhotse.testing.dummies import dummy_recording
 
 from nemo.collections.common.data.lhotse import text_adapters as text_adapters_module
+from nemo.collections.common.data.lhotse.indexed_adapters import create_tar_index as create_nemo_tar_index
 from nemo.collections.common.data.lhotse.text_adapters import (
     AudioTurn,
     NeMoMultimodalConversation,
@@ -78,6 +80,9 @@ def tarred_jsonl_manifest(jsonl_manifest_path, tmp_path_factory):
         for i in range(10):
             conversation.id = f'convo-{i}'
             writer.write(conversation)
+    for i in range(2):  # indexed reads require pre-built indexes
+        create_jsonl_index(tar_dir / f"manifest_{i}.jsonl")
+        create_nemo_tar_index(tar_dir / f"audio_{i}.tar", tar_dir / f"audio_{i}.tar.idx")
     return str(tar_dir / "manifest_{0..1}.jsonl"), str(tar_dir / "audio_{0..1}.tar")
 
 

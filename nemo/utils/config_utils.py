@@ -19,8 +19,29 @@ from dataclasses import is_dataclass
 from typing import Dict, List, Optional, Union
 
 from omegaconf import DictConfig, OmegaConf, open_dict
+from omegaconf.grammar.gen.OmegaConfGrammarParser import OmegaConfGrammarParser
+from omegaconf.grammar_parser import parse
 
 from nemo.utils import logging
+
+
+def validate_model_config_resolvers(config: DictConfig) -> None:
+    """Check artifact resolver names without evaluating configuration references."""
+    _validate_model_config_interpolations(OmegaConf.to_container(config, resolve=False), resolved=False)
+
+
+def resolve_model_config(config: DictConfig) -> DictConfig:
+    """Resolve artifact configuration using internal references and arithmetic only.
+
+    Caller-authored training/override configs can use the application's resolver
+    registry. Downloaded model configs must not read process-specific resources.
+    """
+    validate_model_config_resolvers(config)
+    resolved = OmegaConf.to_container(config, resolve=True)
+    # A resolved string can itself form a new interpolation when copied into a
+    # DictConfig. Reject it before model constructors perform further copies.
+    _validate_model_config_interpolations(resolved, resolved=True)
+    return OmegaConf.create(resolved)
 
 
 def update_model_config(
@@ -265,3 +286,25 @@ def assert_dataclass_signature_match(
 
     else:
         return True, None, None
+
+
+def _validate_model_config_interpolations(config, *, resolved):
+    pending = [config]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, dict):
+            pending.extend(value.keys())
+            pending.extend(value.values())
+        elif isinstance(value, list):
+            pending.extend(value)
+        elif isinstance(value, str) and '${' in value:
+            if resolved:
+                raise ValueError('Model configuration must not produce additional interpolations or resolvers.')
+            nodes = [parse(value)]
+            while nodes:
+                node = nodes.pop()
+                if isinstance(node, OmegaConfGrammarParser.InterpolationResolverContext):
+                    name = node.resolverName()
+                    if name.interpolation() or name.getText() not in ('multiply', 'sum'):
+                        raise ValueError('Model configuration supports only the multiply and sum resolvers.')
+                nodes.extend(getattr(node, 'children', None) or [])

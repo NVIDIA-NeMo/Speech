@@ -545,7 +545,7 @@ def test_text_resume_uses_decode_after_initial_context(computed, expected):
         _dec_audio_valid=torch.ones(1),
         has_phoneme=False,
         _preprocess_prefill=lambda *args: "prefill",
-        _preprocess_decode=lambda *args: "decode",
+        _preprocess_decode_rows=lambda *args: ("decode", ({},)),
     )
     result = EasyMagpieTTSForConditionalGeneration.preprocess(
         model,
@@ -556,7 +556,7 @@ def test_text_resume_uses_decode_after_initial_context(computed, expected):
         text_stream_context_len=71,
         text_token=[42],
     )
-    assert result == expected
+    assert (result[1] if isinstance(result, tuple) else result) == expected
 
 
 def test_async_omni_output_slices_each_request_in_a_padded_batch():
@@ -642,6 +642,43 @@ def phoneme_feedback_model():
     model._token_stop = torch.zeros(3, dtype=torch.bool)
     model._sample_stop = torch.zeros(3, dtype=torch.bool)
     return model
+
+
+def test_batched_decode_preprocess_preserves_independent_request_state(phoneme_feedback_model):
+    model = phoneme_feedback_model
+    model.num_codebooks = 2
+    model.speech_delay = 1
+    model.arch.use_user_speaking_end_token = True
+    model.arch.audio_user_speaking_end_id = 5
+    ids = torch.zeros(3, dtype=torch.long)[1:]
+    infos = [
+        {
+            "decode_offset": 1,
+            "additional_information": {"decode_offset": 0, "text_token": [4], "text_token_start": 1},
+            "text_tokens": [2],
+            "user_audio_prefilled": True,
+        },
+        {
+            "decode_offset": 4,
+            "text_tokens": [3],
+            "gpu_state": {
+                "last_phoneme_token": torch.tensor([[4, 7, 1]]),
+                "last_audio_codes": torch.tensor([[2, 3]]),
+            },
+        },
+    ]
+
+    result_ids, embeds, updates = model.preprocess_decode_batch(input_ids=ids, req_infos=infos)
+
+    assert result_ids is ids
+    torch.testing.assert_close(embeds, torch.zeros(2, model.embedding_dim))
+    assert updates == [{"decode_offset": 2, "text_tokens": [2, 4]}, {"decode_offset": 5}]
+    assert model._dec_text_tokens.tolist() == [0, 4, 0]
+    assert model._dec_text_mask.tolist() == [0, 1, 0]
+    assert model._dec_phoneme_valid.tolist() == [0, 1, 2]
+    assert model._dec_phoneme_state.tolist() == [[0, 0, 0], [7, 7, 0], [4, 7, 1]]
+    assert model._dec_audio_valid.tolist() == [0, 1, 1]
+    assert model._dec_audio_codes.tolist() == [[0, 0], [5, 5], [2, 3]]
 
 
 @torch.inference_mode()

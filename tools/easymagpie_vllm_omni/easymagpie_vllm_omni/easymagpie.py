@@ -61,6 +61,7 @@ from vllm.model_executor.models.utils import AutoWeightsLoader, _merge_multimoda
 from vllm.multimodal import MULTIMODAL_REGISTRY
 from vllm.sequence import IntermediateTensors
 from vllm_omni.model_executor.models.output_templates import OmniOutput
+from vllm_omni.utils.device_copy import index_to_device
 
 logger = init_logger(__name__)
 
@@ -102,6 +103,13 @@ def _merge_streaming_text_chunk(
         return text_tokens, False
 
     return text_tokens + chunk[overlap:], True
+
+
+def _flatten_preprocess_info(info: dict[str, Any]) -> dict[str, Any]:
+    nested = info.get("additional_information")
+    if not isinstance(nested, dict):
+        return info
+    return {**nested, **{key: value for key, value in info.items() if key != "additional_information"}}
 
 
 # Context text used when the request omits ``context_text``
@@ -814,12 +822,7 @@ class EasyMagpieTTSForConditionalGeneration(
         model buffers at ``start`` and return a zero embedding that
         :meth:`forward` accumulates into.
         """
-        nested = info_dict.get("additional_information")
-        if isinstance(nested, dict):
-            merged = {k: v for k, v in info_dict.items() if k != "additional_information"}
-            for k, v in nested.items():
-                merged.setdefault(k, v)
-            info_dict = merged
+        info_dict = _flatten_preprocess_info(info_dict)
 
         device = input_ids.device
         span_len = int(input_ids.shape[0])
@@ -855,7 +858,18 @@ class EasyMagpieTTSForConditionalGeneration(
                     ended.copy_(last_phon[0, -1], non_blocking=True)
             return result
 
-        return self._preprocess_decode(input_ids, start, device, info_dict)
+        embeds, (update,) = self._preprocess_decode_rows(input_ids, start, [info_dict])
+        return input_ids, embeds, update
+
+    def preprocess_decode_batch(
+        self, *, input_ids: torch.Tensor, req_infos: list[dict[str, Any]]
+    ) -> tuple[torch.Tensor, torch.Tensor, list[dict[str, Any]]]:
+        """Prepare a contiguous group of one-token decode rows from Omni."""
+        start = self._batch_slot_offset(input_ids, 0)
+        embeds, updates = self._preprocess_decode_rows(
+            input_ids, start, [_flatten_preprocess_info(i) for i in req_infos]
+        )
+        return input_ids, embeds, updates
 
     @staticmethod
     def _batch_slot_offset(input_ids_view: torch.Tensor, fallback: int) -> int:
@@ -1361,7 +1375,7 @@ class EasyMagpieTTSForConditionalGeneration(
         HF special tokens are disabled so the raw ids index the baked
         ``text_embedding`` table directly, and the trailing text-EOS id closes
         the stream. One id is consumed per decode step (see
-        :meth:`_preprocess_decode`); once exhausted the text channel is masked
+        :meth:`_prepare_decode_row`); once exhausted the text channel is masked
         off.
         """
         tok = self._get_text_tokenizer()
@@ -1439,13 +1453,29 @@ class EasyMagpieTTSForConditionalGeneration(
             has_task_embedding=num_task_embeddings > 0,
         )
 
-    def _preprocess_decode(
-        self,
-        input_ids: torch.Tensor,
-        start: int,
-        device: torch.device,
-        info_dict: dict[str, Any],
-    ) -> tuple[torch.Tensor, torch.Tensor, dict[str, Any]]:
+    def _preprocess_decode_rows(
+        self, input_ids: torch.Tensor, start: int, req_infos: list[dict[str, Any]]
+    ) -> tuple[torch.Tensor, list[dict[str, Any]]]:
+        controls, updates = [], []
+        for offset, info in enumerate(req_infos, start):
+            row, update = self._prepare_decode_row(offset, input_ids.device, info)
+            controls.extend(row)
+            updates.append(update)
+
+        # Keep scalar controls together so a decode group needs one pinned upload.
+        slots = slice(start, start + len(req_infos))
+        device_controls = index_to_device(controls, input_ids.device).view(len(req_infos), 4)
+        self._dec_text_tokens[slots].copy_(device_controls[:, 0])
+        self._dec_text_mask[slots].copy_(device_controls[:, 1])
+        self._dec_audio_valid[slots].copy_(device_controls[:, 2])
+        if self.has_phoneme:
+            self._dec_phoneme_valid[slots].copy_(device_controls[:, 3])
+        embeds = self._combined_embeddings.new_zeros((len(req_infos), self.embedding_dim))
+        return embeds, updates
+
+    def _prepare_decode_row(
+        self, start: int, device: torch.device, info_dict: dict[str, Any]
+    ) -> tuple[tuple[int, int, int, int], dict[str, Any]]:
         decode_offset = int(info_dict.get("decode_offset", 0) or 0)
         info_update: dict[str, Any] = {"decode_offset": decode_offset + 1}
         gpu_state = info_dict.get("gpu_state", {})
@@ -1484,15 +1514,13 @@ class EasyMagpieTTSForConditionalGeneration(
             text_tokens, appended = _merge_streaming_text_chunk(text_tokens, incoming, text_token_start)
             if appended:
                 info_update["text_tokens"] = text_tokens
-        if decode_offset < len(text_tokens):
-            self._dec_text_tokens[start] = int(text_tokens[decode_offset])
-            self._dec_text_mask[start] = 1
-        else:
-            self._dec_text_mask[start] = 0
+        text_valid = decode_offset < len(text_tokens)
+        text_id = int(text_tokens[decode_offset]) if text_valid else _DUMMY_TOKEN_ID
 
         # ── Phoneme channel ── opens at decode step == ``phonemes_delay`` (seeded
         # with phoneme BOS), then feeds back the previous step's prediction, and
         # closes one step after the model emits the phoneme EOS (sticky flag).
+        phoneme_valid = 0
         if self.has_phoneme:
             last_phon = gpu_state.get("last_phoneme_token")
             state = self._dec_phoneme_state[start]
@@ -1500,13 +1528,12 @@ class EasyMagpieTTSForConditionalGeneration(
             if has_feedback:
                 state.copy_(last_phon.reshape(-1), non_blocking=True)
             else:
-                state[-1] = 0
+                state[-1].zero_()
             if decode_offset == self.phonemes_delay:
                 state[:-1].fill_(self.phoneme_bos_id)
-                self._dec_phoneme_valid[start] = 1
-            else:
-                use_feedback = has_feedback and decode_offset > self.phonemes_delay
-                self._dec_phoneme_valid[start] = _PHONEME_FEEDBACK if use_feedback else 0
+                phoneme_valid = 1
+            elif has_feedback and decode_offset > self.phonemes_delay:
+                phoneme_valid = _PHONEME_FEEDBACK
 
         # ── Audio channel ── opens at decode step == ``speech_delay`` (seeded with
         # audio BOS), then feeds back the previous frame's codes. For the leading
@@ -1514,29 +1541,24 @@ class EasyMagpieTTSForConditionalGeneration(
         # condition the backbone); the acoustic predictor still runs for CUDA-graph
         # stability but its codes for those frames are discarded by the caller and
         # never fed back here.
-        if decode_offset < self.speech_delay:
-            self._dec_audio_valid[start] = 0
-        elif decode_offset == self.speech_delay:
+        if decode_offset == self.speech_delay:
             if info_dict.get("user_audio_prefilled") and self.arch.use_user_speaking_end_token:
                 # Native multiturn inference places USER_SPEAKING_END in the
                 # input slot that predicts the first agent acoustic frame.
                 self._dec_audio_codes[start].fill_(self.arch.audio_user_speaking_end_id)
             else:
                 self._dec_audio_codes[start].fill_(self.arch.audio_bos_id)
-            self._dec_audio_valid[start] = 1
-        else:
+        elif decode_offset > self.speech_delay:
             last_codes = gpu_state.get("last_audio_codes")
             if isinstance(last_codes, torch.Tensor) and last_codes.numel() > 0:
                 c = last_codes.to(device=device, dtype=torch.long).reshape(-1)[: self.num_codebooks]
                 self._dec_audio_codes[start, : c.shape[0]].copy_(c)
-                self._dec_audio_valid[start] = 1
             else:
-                # Fallback (should not happen once audio has started): seed BOS.
+                # Recover an active channel with no previous frame by seeding BOS.
                 self._dec_audio_codes[start].fill_(self.arch.audio_bos_id)
-                self._dec_audio_valid[start] = 1
 
-        inputs_embeds_out = torch.zeros((1, self.embedding_dim), device=device, dtype=self._combined_embeddings.dtype)
-        return input_ids, inputs_embeds_out, info_update
+        audio_valid = decode_offset >= self.speech_delay
+        return (text_id, int(text_valid), int(audio_valid), phoneme_valid), info_update
 
     def postprocess(self, hidden_states: torch.Tensor, multimodal_outputs: Optional[dict[str, Any]] = None, **_: Any):
         """Stash the last frame's codes (and phoneme) for the next decode step."""

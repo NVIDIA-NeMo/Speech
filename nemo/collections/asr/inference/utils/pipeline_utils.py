@@ -14,6 +14,7 @@
 # limitations under the License.
 
 
+import os
 import re
 from functools import partial, wraps
 from typing import Iterable
@@ -412,3 +413,35 @@ def filter_tokens_from_greedy_output(
     output["last_token"] = tokens[-1] if tokens else None
     output["last_token_idx"] = timesteps[-1] if timesteps else None
     return output, labels
+
+
+def set_compile_cache_dir(cache_dir: str) -> None:
+    """Make torch.compile store its compiled artifacts in cache_dir and reuse them in later runs.
+    It must be called before the first compiled call.
+    Args:
+        cache_dir: (str) Directory for the inductor and Triton caches, created if it does not exist.
+    """
+    cache_dir = os.path.abspath(os.path.expanduser(cache_dir))
+    os.makedirs(cache_dir, exist_ok=True)
+    os.environ["TORCHINDUCTOR_CACHE_DIR"] = cache_dir
+    os.environ["TRITON_CACHE_DIR"] = os.path.join(cache_dir, "triton")
+
+
+def compile_encoder_body(encoder) -> None:
+    """Compile the body of a cache-aware encoder with ``torch.compile``, as one graph so that inductor can fuse
+    across layer boundaries. The batch width stays dynamic, since it shrinks as streams finish, but the feature
+    length of a chunk is fixed by the bufferer, so that dimension is pinned: left symbolic, the subsampling output
+    length becomes an expression the shape solver cannot divide by.
+    Args:
+        encoder: The encoder whose ``forward_internal`` is replaced by the compiled one.
+    """
+    if not hasattr(encoder, "forward_internal"):
+        raise ValueError("compile_encoder is set, but the encoder has no forward_internal to compile")
+    compiled = torch.compile(encoder.forward_internal, dynamic=True)
+
+    def forward_internal(audio_signal, length, bypass_pre_encode=False, **kwargs):
+        if not bypass_pre_encode:
+            torch._dynamo.mark_static(audio_signal, 2)
+        return compiled(audio_signal, length, bypass_pre_encode=bypass_pre_encode, **kwargs)
+
+    encoder.forward_internal = forward_internal

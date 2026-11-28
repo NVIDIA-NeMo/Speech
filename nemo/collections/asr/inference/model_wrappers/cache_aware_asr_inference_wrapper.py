@@ -29,6 +29,8 @@ class CacheAwareASRInferenceWrapper(ASRInferenceWrapper):
         - stream_step: Executes a single streaming step.
     """
 
+    compiles_encoder_body = True
+
     def get_input_features(self) -> int:
         """
         Returns the number of channels in the input features.
@@ -138,6 +140,11 @@ class CacheAwareASRInferenceWrapper(ASRInferenceWrapper):
         Args:
             enabled: (bool) whether to enable CUDA graphs for the encoder streaming step.
         """
+        if enabled and self.compile_encoder:
+            raise ValueError(
+                "compile_encoder and use_cuda_graphs cannot be combined: the CUDA-graph step replaces the "
+                "encoder body that would be compiled"
+            )
         self.asr_model.encoder.set_streaming_cuda_graphs(enabled=enabled)
 
     def stream_step(self, *args, **kwargs) -> Any:

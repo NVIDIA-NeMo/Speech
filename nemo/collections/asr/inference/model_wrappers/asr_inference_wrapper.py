@@ -23,7 +23,11 @@ from omegaconf import DictConfig, open_dict
 
 from nemo.collections.asr.inference.utils.constants import SENTENCEPIECE_UNDERSCORE
 from nemo.collections.asr.inference.utils.device_utils import setup_device
-from nemo.collections.asr.inference.utils.pipeline_utils import make_preprocessor_deterministic
+from nemo.collections.asr.inference.utils.pipeline_utils import (
+    compile_encoder_body,
+    make_preprocessor_deterministic,
+    set_compile_cache_dir,
+)
 from nemo.collections.asr.models import ASRModel, EncDecHybridRNNTCTCModel
 from nemo.collections.asr.parts.submodules.ctc_decoding import CTCDecodingConfig
 from nemo.collections.asr.parts.submodules.rnnt_decoding import RNNTDecodingConfig
@@ -47,6 +51,9 @@ class ASRInferenceWrapper:
     # decoder used by the derived classes: 'ctc' or 'rnnt' (selects the decoding config of hybrid models)
     decoder_type: str | None = None
 
+    # compile `encoder.forward_internal` (dynamic batch, static feature length) instead of the whole encoder
+    compiles_encoder_body: bool = False
+
     def __init__(
         self,
         model_name: str,
@@ -55,6 +62,8 @@ class ASRInferenceWrapper:
         device_id: int = 0,
         compute_dtype: str = 'bfloat16',
         use_amp: bool = True,
+        compile_encoder: bool = False,
+        compile_cache_dir: str | None = None,
     ):
         """
         Initialize the ASR inference wrapper.
@@ -65,12 +74,21 @@ class ASRInferenceWrapper:
             device_id: (int) device ID to run the model on.
             compute_dtype: (str) compute dtype to run the model on.
             use_amp: (bool) Use Automatic Mixed Precision
+            compile_encoder: (bool) Compile the encoder with torch.compile. The compilation happens on the first
+                calls, so it should fall into warmup. Fusion changes the order of low-precision arithmetic, so the
+                decoded text can differ from eager in a few transcripts.
+            compile_cache_dir: (str | None) Directory where the compiled artifacts are stored and reused by later
+                runs, so the encoder is not compiled twice. Requires compile_encoder.
         """
 
         self.decoding_cfg = decoding_cfg
         self.device_str, self.device_id, self.compute_dtype = setup_device(device.strip(), device_id, compute_dtype)
         self.device = torch.device(self.device_str)
         self.use_amp = use_amp
+        if compile_cache_dir is not None and not compile_encoder:
+            raise ValueError("compile_cache_dir is set but compile_encoder is false, so nothing would be cached")
+        self.compile_encoder = compile_encoder
+        self.compile_cache_dir = compile_cache_dir
         self.asr_model = self.load_model(model_name, self.device)
         self.asr_model_cfg = self.asr_model._cfg
         self.set_dither_to_zero()
@@ -82,6 +100,15 @@ class ASRInferenceWrapper:
 
         # after `__post_init__`, which checks that the model type matches the wrapper
         self._check_not_end_of_utterance_model()
+
+        # after the post initialization, which may still cast and wrap the model
+        if self.compile_encoder:
+            if self.compile_cache_dir is not None:
+                set_compile_cache_dir(self.compile_cache_dir)
+            if self.compiles_encoder_body:
+                compile_encoder_body(self.asr_model.encoder)
+            else:
+                self.asr_model.encoder = torch.compile(self.asr_model.encoder)
 
     @staticmethod
     def load_model(model_name: str, map_location: torch.device) -> ASRModel:

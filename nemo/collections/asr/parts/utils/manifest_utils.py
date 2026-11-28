@@ -194,8 +194,8 @@ def get_subsegment_dict(subsegments_manifest_file: str, window: float, shift: fl
                 _subsegment_dict[uniq_id] = {'ts': [], 'json_dic': []}
             for subsegment in subsegments:
                 start, dur = subsegment
-            _subsegment_dict[uniq_id]['ts'].append([round(start, deci), round(start + dur, deci)])
-            _subsegment_dict[uniq_id]['json_dic'].append(dic)
+                _subsegment_dict[uniq_id]['ts'].append([round(start, deci), round(start + dur, deci)])
+                _subsegment_dict[uniq_id]['json_dic'].append(dic)
     return _subsegment_dict
 
 

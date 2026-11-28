@@ -995,13 +995,13 @@ class SpeakerTaggedASR:
             if speaker_transcriptions[sess_idx] is not None:
                 trans_hyp[sess_idx].text = speaker_transcriptions[sess_idx]
             speaker_added_word_dicts = []
-            for word_idx, trans_wdict in enumerate(trans_hyp[0].timestamp['word']):
+            for word_idx, trans_wdict in enumerate(trans_hyp[sess_idx].timestamp['word']):
                 trans_wdict_copy = deepcopy(trans_wdict)
                 trans_wdict_copy['speaker'] = word_and_ts_seq[uniq_id]['words'][word_idx]['speaker']
                 speaker_added_word_dicts.append(trans_wdict_copy)
             trans_hyp[sess_idx].timestamp['word'] = speaker_added_word_dicts
             w_count, segment_list = 0, []
-            for word_idx, trans_segdict in enumerate(trans_hyp[0].timestamp['segment']):
+            for word_idx, trans_segdict in enumerate(trans_hyp[sess_idx].timestamp['segment']):
                 words = trans_segdict['segment'].split()
                 spk_vote_pool = []
                 for word in words:

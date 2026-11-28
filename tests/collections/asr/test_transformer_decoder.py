@@ -34,6 +34,13 @@ from nemo.collections.asr.modules.transformer.transformer_modules import (
 from nemo.collections.asr.modules.transformer.transformer_utils import get_nemo_transformer
 from nemo.collections.asr.parts.packed_sequence import pack_encoder_output
 from nemo.collections.asr.parts.submodules.packed_attention import PackedAttentionContext
+from nemo.collections.common.parts.transformer_utils import transformer_weights_init
+from nemo.core.optim.muon import Muon
+
+_FUSED_BLOCKS = dict(
+    self_attn=functools.partial(MultiHeadAttention, use_bias=False, rotary_base=10000.0, fused_qkv=True),
+    cross_attn=functools.partial(MultiHeadAttention, fused_kv=True),
+)
 
 
 def _composed_decoder(**overrides):
@@ -98,6 +105,153 @@ class TestTransformerDecoderBlockComposition:
         torch.testing.assert_close(mems[-1], full, atol=1e-5, rtol=1e-5)
 
     @pytest.mark.unit
+    @pytest.mark.parametrize("pre_ln", [True, False])
+    @pytest.mark.parametrize("autocast_dtype", [None, torch.bfloat16])
+    @pytest.mark.parametrize("device", ["cpu", pytest.param("cuda", marks=pytest.mark.gpu)])
+    def test_fused_projections_match_separate_ones_with_the_same_weights(self, pre_ln, autocast_dtype, device):
+        if device == "cuda" and not torch.cuda.is_available():
+            pytest.skip("needs CUDA")
+        torch.manual_seed(0)
+        separate = _composed_decoder(pre_ln=pre_ln).to(device)
+        for parameter in separate.parameters():
+            parameter.data.normal_(0, 0.3)
+        fused = _composed_decoder(pre_ln=pre_ln, **_FUSED_BLOCKS).to(device)
+        fused.load_state_dict(separate.state_dict())
+        input_ids = torch.tensor([[10, 1, 5, 7, 2], [10, 3, 4, 0, 0]], device=device)
+        decoder_mask = torch.tensor([[1, 1, 1, 1, 1], [1, 1, 1, 0, 0]], device=device)
+        encoder_states = torch.randn(2, 9, 16, device=device)
+        encoder_mask = (torch.arange(9, device=device) < torch.tensor([[9], [6]], device=device)).long()
+
+        def run(decoder):
+            # train mode without dropout, as a training step runs it
+            decoder.train()
+            with torch.autocast(device, dtype=autocast_dtype, enabled=autocast_dtype is not None):
+                states = decoder(
+                    input_ids=input_ids,
+                    decoder_mask=decoder_mask,
+                    encoder_embeddings=encoder_states,
+                    encoder_mask=encoder_mask,
+                )
+            states.float().square().sum().backward()
+            return states, {name: parameter.grad for name, parameter in decoder.named_parameters()}
+
+        states, grads = run(fused)
+        expected_states, separate_grads = run(separate)
+        torch.testing.assert_close(states, expected_states)
+        # the gradient of a fused matrix is the gradients of its parts, stacked in the order query, key, value
+        assert len(grads) < len(separate_grads)
+        for name, grad in grads.items():
+            if ".qkv_net." in name:
+                parts = [name.replace("qkv_net", part) for part in ("query_net", "key_net", "value_net")]
+            elif ".kv_net." in name:
+                parts = [name.replace("kv_net", part) for part in ("key_net", "value_net")]
+            else:
+                parts = [name]
+            expected = torch.cat([separate_grads[part] for part in parts])
+            torch.testing.assert_close(grad, expected, msg=lambda text: f"{name}: {text}")
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("source", [dict(), dict(fused_qkv=True), dict(fused_kv=True)])
+    @pytest.mark.parametrize("target", [dict(), dict(fused_qkv=True), dict(fused_kv=True)])
+    @pytest.mark.parametrize("use_bias", [True, False])
+    def test_projection_layouts_load_each_other_and_agree(self, source, target, use_bias):
+        torch.manual_seed(0)
+        reference = MultiHeadAttention(16, 2, use_bias=use_bias, **source)
+        attention = MultiHeadAttention(16, 2, use_bias=use_bias, **target)
+        result = attention.load_state_dict(reference.state_dict(), strict=False)
+        assert not result.missing_keys and not result.unexpected_keys
+        # three different tensors: each takes its own rows of a fused matrix
+        queries, keys, values = torch.randn(3, 5, 16), torch.randn(3, 7, 16), torch.randn(3, 7, 16)
+        mask = torch.zeros(3, 1, 5, 7)
+        mask[1, :, :, 4:] = -10000.0
+        output, _ = attention(queries, keys, values, mask)
+        expected, _ = reference(queries, keys, values, mask)
+        torch.testing.assert_close(output, expected)
+
+    @pytest.mark.unit
+    def test_fused_projections_are_single_matrices_for_muon(self):
+        block = _composed_decoder(**_FUSED_BLOCKS).decoder.layers[0]
+        assert {name: tuple(p.shape) for name, p in block.first_sub_layer.named_parameters()} == {
+            "qkv_net.weight": (48, 16),
+            "out_projection.weight": (16, 16),
+        }
+        assert {name: tuple(p.shape) for name, p in block.second_sub_layer.named_parameters()} == {
+            "query_net.weight": (16, 16),
+            "query_net.bias": (16,),
+            "kv_net.weight": (32, 16),
+            "kv_net.bias": (32,),
+            "out_projection.weight": (16, 16),
+            "out_projection.bias": (16,),
+        }
+        for fused in (block.first_sub_layer.qkv_net, block.second_sub_layer.kv_net):
+            assert Muon.selects_muon(fused.weight, use_muon=None, adam_dim_threshold=8192)
+        # an initializer that depends on the shape sees the fused one
+        block.apply(transformer_weights_init)
+        assert block.first_sub_layer.qkv_net.weight.abs().max() <= math.sqrt(6 / (48 + 16))
+        assert block.first_sub_layer.qkv_net.weight.abs().max() > 0.8 * math.sqrt(6 / (48 + 16))
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("pre_ln", [True, False])
+    def test_fused_projections_incremental_decoding_matches_full_pass(self, pre_ln):
+        torch.manual_seed(0)
+        decoder = _composed_decoder(pre_ln=pre_ln, **_FUSED_BLOCKS)
+        for parameter in decoder.parameters():
+            parameter.data.normal_(0, 0.3)
+        input_ids = torch.tensor([[10, 1, 5, 7, 2], [10, 3, 4, 0, 0]])
+        encoder_states = torch.randn(2, 9, 16)
+        encoder_mask = torch.ones(2, 9)
+        with torch.no_grad():
+            full, _ = decoder.decoder(
+                decoder.embedding(input_ids), torch.ones_like(input_ids), encoder_states, encoder_mask
+            )
+            mems = None
+            for step in range(input_ids.shape[1]):
+                embedded = decoder.embedding(input_ids[:, step : step + 1], start_pos=step)
+                mems, _ = decoder.decoder(
+                    embedded, torch.ones(2, 1), encoder_states, encoder_mask, mems, return_mems=True
+                )
+        torch.testing.assert_close(mems[-1], full, atol=1e-5, rtol=1e-5)
+
+    @pytest.mark.unit
+    def test_fused_projections_checkpoints(self, tmp_path):
+        torch.manual_seed(0)
+        separate = _composed_decoder()
+        # the default layout keeps its names and their order
+        assert [name for name in separate.state_dict() if "layers.0.first_sub_layer" in name] == [
+            f"_decoder.layers.0.first_sub_layer.{name}.weight"
+            for name in ("query_net", "key_net", "value_net", "out_projection")
+        ]
+        inputs = dict(
+            input_ids=torch.tensor([[10, 1, 5, 7, 2], [10, 3, 4, 0, 0]]),
+            decoder_mask=torch.tensor([[1, 1, 1, 1, 1], [1, 1, 1, 0, 0]]),
+            encoder_embeddings=torch.randn(2, 9, 16),
+            encoder_mask=torch.ones(2, 9, dtype=torch.long),
+        )
+        with torch.no_grad():
+            expected = separate(**inputs)
+
+        # a checkpoint with separate projections restores a fused decoder, strictly
+        torch.save(separate.state_dict(), tmp_path / "separate.pt")
+        fused = _composed_decoder(**_FUSED_BLOCKS)
+        fused.load_state_dict(torch.load(tmp_path / "separate.pt"))
+        with torch.no_grad():
+            torch.testing.assert_close(fused(**inputs), expected)
+
+        # and the fused checkpoint restores both layouts
+        torch.save(fused.state_dict(), tmp_path / "fused.pt")
+        assert "_decoder.layers.0.first_sub_layer.qkv_net.weight" in torch.load(tmp_path / "fused.pt")
+        for options in (dict(), _FUSED_BLOCKS):
+            restored = _composed_decoder(**options)
+            restored.load_state_dict(torch.load(tmp_path / "fused.pt"))
+            with torch.no_grad():
+                torch.testing.assert_close(restored(**inputs), expected)
+
+    @pytest.mark.unit
+    def test_fused_projections_exclude_each_other(self):
+        with pytest.raises(ValueError, match="fused_kv=True cannot be set"):
+            MultiHeadAttention(16, 2, fused_qkv=True, fused_kv=True)
+
+    @pytest.mark.unit
     def test_blocks_from_hydra_sections(self):
         config = DictConfig(
             {
@@ -135,6 +289,26 @@ class TestTransformerDecoderBlockComposition:
         assert block.third_sub_layer.dense_in.weight.shape == (48, 16) and block.third_sub_layer.dense_in.bias is None
         assert isinstance(block.third_sub_layer.act_fn, torch.nn.SiLU)
         assert isinstance(decoder.embedding.layer_norm, torch.nn.LayerNorm)
+
+    @pytest.mark.unit
+    def test_fused_projections_from_hydra_sections(self):
+        attention = "nemo.collections.asr.modules.transformer.transformer_modules.MultiHeadAttention"
+        config = DictConfig(
+            {
+                "vocab_size": 11,
+                "hidden_size": 16,
+                "num_layers": 1,
+                "inner_size": 24,
+                "num_attention_heads": 2,
+                "self_attn": {"_target_": attention, "_partial_": True, "fused_qkv": True},
+                "cross_attn": {"_target_": attention, "_partial_": True, "fused_kv": True},
+            }
+        )
+        block = get_nemo_transformer(config_dict=config, encoder=False).decoder.layers[0]
+        assert block.first_sub_layer.qkv_net.weight.shape == (48, 16) and block.first_sub_layer.query_net is None
+        assert block.second_sub_layer.kv_net.weight.shape == (32, 16) and block.second_sub_layer.key_net is None
+        assert block.second_sub_layer.query_net.weight.shape == (16, 16)
+        assert block.second_sub_layer.return_xatt_scores
 
     @pytest.mark.unit
     def test_rms_norm(self):
@@ -310,6 +484,33 @@ class TestPackedTransformerDecoder:
         for name, parameter in decoder.named_parameters():
             if name in reference_grads:
                 torch.testing.assert_close(parameter.grad, reference_grads[name], msg=name)
+
+    @pytest.mark.unit
+    def test_fused_projections_match_separate_ones(self):
+        torch.manual_seed(0)
+        separate = _composed_decoder().double()
+        for parameter in separate.parameters():
+            parameter.data.normal_(0, 0.3)
+        fused = _composed_decoder(**_FUSED_BLOCKS).double()
+        fused.load_state_dict(separate.state_dict())
+        input_ids = torch.tensor([[10, 1, 5, 7, 2], [10, 3, 4, 0, 0], [10, 6, 0, 0, 0]])
+        encoder_states = torch.randn(3, 9, 16, dtype=torch.float64)
+        inputs = _packed_inputs(input_ids, torch.tensor([5, 3, 2]), encoder_states, torch.tensor([9, 4, 7]))
+
+        packed = fused.forward_packed(*inputs)
+        expected = separate.forward_packed(*inputs)
+        torch.testing.assert_close(packed, expected)
+        packed.square().sum().backward()
+        expected.square().sum().backward()
+        grads = dict(separate.named_parameters())
+        for name, parameter in fused.named_parameters():
+            if ".qkv_net." in name:
+                parts = [name.replace("qkv_net", part) for part in ("query_net", "key_net", "value_net")]
+            elif ".kv_net." in name:
+                parts = [name.replace("kv_net", part) for part in ("key_net", "value_net")]
+            else:
+                parts = [name]
+            torch.testing.assert_close(parameter.grad, torch.cat([grads[part].grad for part in parts]), msg=name)
 
     @pytest.mark.unit
     def test_half_precision_attention_matches_padded_on_cpu(self):

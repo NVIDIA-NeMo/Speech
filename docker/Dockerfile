@@ -61,6 +61,7 @@ ENV PATH="/root/.local/bin:${VIRTUAL_ENV}/bin:${PATH}"
 RUN <<"EOF" bash -ex
 apt-get update
 apt-get install -y --only-upgrade --no-install-recommends \
+    libbrotli1 \
     libssl3t64 \
     openssl
 apt-get install -y \

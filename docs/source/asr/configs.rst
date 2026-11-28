@@ -436,6 +436,28 @@ specify the tokenizer if you want to use sub-word encoding instead of character-
 The encoder section includes the details about the Conformer-CTC encoder architecture. You may find more information in the
 config files and also :ref:`nemo.collections.asr.modules.ConformerEncoder <conformer-encoder-api>`.
 
+Dropout masks of the encoder
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The encoder's dropouts draw a mask per element by default. With ``dropout_broadcast: true`` in the encoder section,
+the pre-encoder dropout and the feed-forward and residual dropouts of every layer draw one mask over the feature axis
+per utterance and share it over all positions of that utterance, so an utterance loses the same features at every
+frame and every utterance its own; the positional-embedding and attention dropouts stay per element.
+
+.. code-block:: yaml
+
+    encoder:
+      _target_: nemo.collections.asr.modules.ConformerEncoder
+      dropout_broadcast: true
+
+The option changes the training (another dropout pattern, not a speedup of the same one) and is off by default.
+In training on CUDA with Triton installed and float32, bfloat16 or float16 states, the masks of the feed-forward
+blocks run through their fused activation-dropout kernels, which also save one tensor of the hidden width per block
+instead of three, and the residual dropouts of the layers run as a kernel that saves the mask alone.
+The sequence-packed forward (``forward_sequence_packed``) gives every token the mask of its utterance through the
+packing metadata; a custom feed-forward block used with the option must accept the ``dropout_broadcast`` argument
+and, on the packed path, the ``context`` argument of ``ConformerFeedForward.forward``.
+
 
 Conformer-Transducer
 ~~~~~~~~~~~~~~~~~~~~

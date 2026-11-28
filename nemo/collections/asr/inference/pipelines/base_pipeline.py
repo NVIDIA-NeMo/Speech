@@ -28,8 +28,8 @@ from torch import Tensor
 
 from nemo.collections.asr.inference.model_wrappers.asr_inference_wrapper import ASRInferenceWrapper
 from nemo.collections.asr.inference.pipelines.pipeline_interface import PipelineInterface
-from nemo.collections.asr.inference.streaming.buffering.audio_bufferer import BatchedAudioBufferer
 from nemo.collections.asr.inference.streaming.buffering.cache_feature_bufferer import BatchedCacheFeatureBufferer
+from nemo.collections.asr.inference.streaming.buffering.stacked_audio_bufferer import StackedAudioBufferer
 from nemo.collections.asr.inference.streaming.framing.multi_stream import ContinuousBatchedFrameStreamer
 from nemo.collections.asr.inference.streaming.framing.request import Frame
 from nemo.collections.asr.inference.streaming.framing.request_options import ASRRequestOptions
@@ -138,9 +138,13 @@ class BasePipeline(PipelineInterface):
         return [self.get_state(stream_id) for stream_id in stream_ids]
 
     def delete_state(self, stream_id: int) -> None:
-        """Delete the state from the state pool."""
+        """Delete the state of the stream and release its buffer."""
         if stream_id in self._state_pool:
             del self._state_pool[stream_id]
+        # a stream that ends without a last frame still holds its buffer
+        bufferer = getattr(self, 'bufferer', None)
+        if bufferer is not None:
+            bufferer.rm_stream(stream_id)
 
     def delete_states(self, stream_ids: Iterable[int]) -> None:
         """Delete states for a list of stream IDs."""
@@ -412,12 +416,40 @@ class BasePipeline(PipelineInterface):
         """Initialize the bufferer."""
         check_existance_of_required_attributes(
             self,
-            ['sample_rate', 'buffer_size_in_secs'],
+            ['sample_rate', 'buffer_size_in_secs', 'device', 'batch_size'],
+        )
+        self.bufferer = StackedAudioBufferer(
+            sample_rate=self.sample_rate,
+            buffer_size_in_secs=self.buffer_size_in_secs,
+            device=self.device,
+            num_slots=self.batch_size,
         )
 
-        self.bufferer = BatchedAudioBufferer(
-            sample_rate=self.sample_rate, buffer_size_in_secs=self.buffer_size_in_secs
-        )
+    def align_buffers_for_preprocessing(
+        self, frames: list[Frame], raw_signals: Tensor, left_paddings: Tensor
+    ) -> tuple[Tensor, Tensor]:
+        """
+        Get the audio buffers and their valid lengths as the preprocessor expects them.
+        With right padding, every buffer is rolled to the left by its left padding, so the audio starts at sample 0.
+        Args:
+            frames: (list[Frame]) Frames of the buffers.
+            raw_signals: (Tensor) Audio buffers, [batch, buffer_size].
+            left_paddings: (Tensor) Left paddings of the audio buffers, [batch].
+        Returns:
+            (tuple[Tensor, Tensor]) Audio buffers [batch, buffer_size] and their valid lengths [batch].
+        """
+        buffer_len = raw_signals.size(1)
+        # Only final frames have right padding
+        right_paddings = torch.tensor(
+            [frame.size - frame.valid_size for frame in frames], device=raw_signals.device
+        ).clamp(min=0)
+        buffer_lens = buffer_len - right_paddings
+        if self.right_padding:
+            # Padding at the beginning of the buffer degrades the accuracy
+            positions = torch.arange(buffer_len, device=raw_signals.device) + left_paddings.unsqueeze(1)
+            raw_signals = raw_signals.gather(1, positions % buffer_len)
+            buffer_lens = buffer_lens - left_paddings
+        return raw_signals, buffer_lens
 
     def init_bufferer_for_cache_aware_streaming(self) -> None:
         """Initialize the bufferer for cache-aware streaming."""

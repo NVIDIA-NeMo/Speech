@@ -21,7 +21,7 @@ import torch
 from omegaconf import DictConfig
 from torch import Tensor
 
-from nemo.collections.asr.inference.streaming.buffering.audio_bufferer import AudioBufferer
+from nemo.collections.asr.inference.streaming.buffering.stacked_audio_bufferer import StackedAudioBufferer
 from nemo.collections.asr.inference.streaming.framing.request import Frame
 from nemo.collections.asr.inference.utils.constants import LOG_MEL_ZERO
 from nemo.collections.asr.models import ASRModel
@@ -81,9 +81,18 @@ class BatchedCacheFeatureBufferer:
         self.n_chunk_look_back = int(self.timestep_duration * self.sample_rate)
         self.chunk_size = int(self.chunk_size_in_secs * self.sample_rate)
         self.extended_chunk_size = self.n_chunk_look_back + self.chunk_size
-        self.audio_bufferers = [
-            AudioBufferer(self.sample_rate, self.buffer_size_in_secs) for _ in range(self.num_slots)
-        ]
+        # Only the last samples of the audio buffer reach the preprocessor, so only those are kept:
+        # the chunk with the look back for the first feature, or the whole buffer when it is as long as the chunk
+        audio_buffer_size = int(self.buffer_size_in_secs * self.sample_rate)
+        if not self.is_buffer_size_equal_to_chunk_size:
+            audio_buffer_size = min(audio_buffer_size, self.extended_chunk_size)
+        self.audio_bufferer = StackedAudioBufferer(
+            sample_rate=self.sample_rate,
+            buffer_size_in_secs=self.buffer_size_in_secs,
+            device=self.device,
+            num_slots=self.num_slots,
+            buffer_size=audio_buffer_size,
+        )
 
         self.feature_buffer_len = int(buffer_size_in_secs / self.timestep_duration)
         self.feature_chunk_len = int(chunk_size_in_secs / self.timestep_duration)
@@ -116,6 +125,16 @@ class BatchedCacheFeatureBufferer:
             stream_id = self.slotidx2streamidx[slot_id]
             del self.slotidx2streamidx[slot_id], self.streamidx2slotidx[stream_id]
 
+    def rm_stream(self, stream_id: int) -> None:
+        """
+        Free the slot of the given stream
+        Args:
+            stream_id (int): stream id
+        """
+        slot_id = self.streamidx2slotidx.get(stream_id)
+        if slot_id is not None:
+            self.free_slots([slot_id])
+
     def reset_slots(self, slot_ids: list[int]) -> None:
         """
         Reset the slots for the given slot_ids
@@ -124,22 +143,22 @@ class BatchedCacheFeatureBufferer:
         """
         slot_ids_tensor = torch.tensor(slot_ids, device=self.device, dtype=torch.long)
         self.feature_buffer.index_fill_(0, slot_ids_tensor, self.ZERO_LEVEL_SPEC_DB_VAL)
-        for slot_id in slot_ids:
-            self.audio_bufferers[slot_id].reset()
+        # the audio history goes with the features
+        self.audio_bufferer.reset_slots(slot_ids)
 
     def preprocess(
-        self, audio_buffers: list[Tensor], right_paddings: Tensor, expected_feat_len: int
+        self, audio_buffers: Tensor, right_paddings: Tensor, expected_feat_len: int
     ) -> tuple[Tensor, Tensor]:
         """
         Preprocess the audio buffers with the given right paddings and expected feature length
         Args:
-            audio_buffers (list[Tensor]): list of audio buffers
+            audio_buffers (Tensor): audio buffers, shape (B, T)
             right_paddings (Tensor): right paddings: right paddings are not zero for last frames
             expected_feat_len (int): expected feature length
         Returns:
             tuple[Tensor, Tensor]: features and right paddings
         """
-        signals = torch.vstack(audio_buffers).to(self.device)  # B x T
+        signals = audio_buffers.to(self.device)  # B x T
         signals_len = torch.tensor([signals.shape[1]] * signals.shape[0], device=self.device, dtype=torch.long)  # B
         signals_len = signals_len - right_paddings.long()
         features, feature_lens = self.preprocessor(input_signal=signals, length=signals_len)
@@ -212,18 +231,7 @@ class BatchedCacheFeatureBufferer:
         right_paddings = torch.tensor(
             [frame.size - frame.valid_size for frame in frames], dtype=torch.long, device=self.device
         )
-        audio_buffers = []
-        for i, frame in enumerate(frames):
-            slot_id = slot_ids[i]
-            self.audio_bufferers[slot_id].update(frame)
-
-            buffer = self.audio_bufferers[slot_id].sample_buffer
-            if not self.is_buffer_size_equal_to_chunk_size:
-                # Add look_back to have context for the first feature
-                audio_buffers.append(buffer[-(self.n_chunk_look_back + self.chunk_size) :])
-            else:
-                # If the buffer size is equal to the chunk size, just take the whole buffer
-                audio_buffers.append(buffer)
+        audio_buffers, _ = self.audio_bufferer.update_slots(slot_ids, frames)
 
         features, right_paddings = self.preprocess(
             audio_buffers=audio_buffers,

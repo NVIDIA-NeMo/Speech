@@ -144,13 +144,28 @@ class PackedAttentionContext:
 
     @classmethod
     def from_lengths(cls, lengths: Tensor, *, rel_pos_kernel: bool = True) -> "PackedAttentionContext":
-        """Metadata for token-flat ids or states whose sequences have these lengths, in packing order."""
+        """Metadata for token-flat ids or states whose sequences have these lengths, in packing order.
+
+        Args:
+            lengths: sequence lengths of shape ``(B,)`` in an integer dtype, none negative,
+                with a sum that fits the int32 offsets of the variable-length kernels.
+            rel_pos_kernel: as for the constructor.
+        """
+        if lengths.ndim != 1:
+            raise ValueError(f"lengths must have shape (B,), got {tuple(lengths.shape)}.")
+        if lengths.dtype == torch.bool or lengths.is_floating_point() or lengths.is_complex():
+            raise TypeError(f"lengths must have an integer dtype, got {lengths.dtype}.")
         lengths = lengths.to(torch.int64)
-        total_tokens = int(lengths.sum().item())
-        max_seqlen = int(lengths.max().item()) if lengths.numel() else 0
+        # one host copy serves the checks and the host values the kernels need
+        host_lengths = lengths.tolist()
+        if any(length < 0 for length in host_lengths):
+            raise ValueError(f"lengths must not be negative, got {host_lengths}.")
+        total_tokens = sum(host_lengths)
+        if total_tokens > torch.iinfo(torch.int32).max:
+            raise ValueError(f"lengths must sum to at most 2**31 - 1 tokens, got {total_tokens}.")
         placeholder = lengths.new_empty((total_tokens, 0), dtype=torch.float32)
         packed = PackedEncoderActivations.from_validated(
-            placeholder, lengths, lengths_to_cu_seqlens(lengths), max_seqlen
+            placeholder, lengths, lengths_to_cu_seqlens(lengths), max(host_lengths, default=0)
         )
         return cls(packed, rel_pos_kernel=rel_pos_kernel)
 
@@ -328,7 +343,8 @@ def packed_attention(
             with ``pos_emb`` the Transformer-XL position term ``pos_query[i] . pos_emb[c - (i - j)]``
             of query position ``i`` and key position ``j`` is scaled like the content scores and added to them;
             both or neither.
-        pos_emb: projected relative position embedding, shape ``(R, H, d_k)`` with odd ``R``,
+        pos_emb: projected relative position embedding in the dtype of ``q``, as ``pos_query``,
+            shape ``(R, H, d_k)`` with odd ``R``,
             whose row ``c = (R - 1) / 2`` is the relative position zero;
             it covers at least ``context.rel_pos_max_seqlen - 1`` positions each way.
             With a key window bounded on both sides a shorter one serves, provided no key is further
@@ -337,19 +353,78 @@ def packed_attention(
             shape ``(T_total, H, R)`` with odd ``R`` and the row convention of ``pos_emb``
             (``R = 2 * max_seqlen - 1`` indexes it by ``max_seqlen - 1 - (i - j)``);
             the form of the FlexAttention and reference paths, which it keeps on.
-        dropout_p: dropout on the attention weights, supported by every path but FlexAttention
-            (see ``packed_attention_supports_dropout``).
-        scale: score scale, ``1 / sqrt(d_k)`` by default.
+            Any floating-point dtype; the output keeps the dtype of ``q``.
+        dropout_p: dropout on the attention weights, in ``[0, 1]``, supported by every path but FlexAttention
+            (see ``packed_attention_supports_dropout``);
+            ``1.0`` drops every weight, so the result is zero on every path.
+        scale: finite score scale, ``1 / sqrt(d_k)`` by default; zero gives uniform weights,
+            a negative scale turns the order of the scores around;
+            a one-element tensor or NumPy scalar is read as a number, so it must not require a gradient.
 
     Returns:
         Context vectors of shape ``(T_total, H, d_k)``.
+
+    Raises:
+        ValueError: for inputs that do not match the context or each other (shape, dtype of ``q``, ``k``,
+            ``v``, ``pos_query`` and ``pos_emb``, device) and for scalars outside their ranges,
+            checked before the dispatch so that the backends reject these calls alike.
+        NotImplementedError: on CUDA for a ``dropout_p`` inside ``(0, 1)`` where FlexAttention would have to apply it.
     """
+    if not 0.0 <= dropout_p <= 1.0:
+        raise ValueError(f"dropout_p must be in [0, 1], got {dropout_p}.")
+    if isinstance(scale, Tensor) and scale.requires_grad:
+        raise ValueError("scale is read as a number, so it must not require a gradient.")
+    # the compiled FlexAttention kernel takes a Python number
+    scale = None if scale is None else float(scale)
+    if scale is not None and not math.isfinite(scale):
+        raise ValueError(f"scale must be finite, got {scale}.")
+    tensors = {"q": q, "k": k, "v": v, "pos_query": pos_query, "pos_emb": pos_emb, "rel_pos_bias": rel_pos_bias}
+    for name, tensor in tensors.items():
+        if tensor is not None and tensor.device != context.device:
+            raise ValueError(f"{name} is on {tensor.device}, the context on {context.device}.")
+    if q.ndim != 3 or q.shape[0] != context.total_tokens or k.shape != q.shape or v.shape != q.shape:
+        raise ValueError(
+            "q, k and v must share one shape (T_total, H, d_k), "
+            f"with the {context.total_tokens} tokens of the context, "
+            f"got {tuple(q.shape)}, {tuple(k.shape)} and {tuple(v.shape)}."
+        )
+    if k.dtype != q.dtype or v.dtype != q.dtype:
+        raise ValueError(f"q, k and v must share one dtype, got {q.dtype}, {k.dtype} and {v.dtype}.")
     if (pos_query is None) != (pos_emb is None):
         raise ValueError("pos_query and pos_emb come together: give both or neither.")
     if rel_pos_bias is not None and pos_query is not None:
         raise ValueError("The position term comes either as rel_pos_bias or as pos_query and pos_emb, not both.")
+    if pos_query is not None and (pos_query.dtype != q.dtype or pos_emb.dtype != q.dtype):
+        # the kernel and the materialization take the factors in the dtype of the queries
+        raise ValueError(
+            f"pos_query and pos_emb must have the dtype {q.dtype} of q, got {pos_query.dtype} and {pos_emb.dtype}."
+        )
+    if rel_pos_bias is not None:
+        if not rel_pos_bias.is_floating_point():
+            raise ValueError(f"rel_pos_bias must have a floating-point dtype, got {rel_pos_bias.dtype}.")
+        if rel_pos_bias.dtype == torch.float64 and q.dtype != torch.float64:
+            # FlexAttention compiles no float64; the scores of narrower queries gain nothing from it
+            rel_pos_bias = rel_pos_bias.to(torch.float32)
     if scale is None:
         scale = 1.0 / math.sqrt(q.shape[-1])
+    if pos_query is not None and (
+        pos_query.shape != q.shape
+        or pos_emb.ndim != 3
+        or pos_emb.shape[1:] != q.shape[1:]
+        or pos_emb.shape[0] % 2 == 0
+    ):
+        raise ValueError(
+            f"pos_query must have the shape {tuple(q.shape)} of q "
+            f"and pos_emb the shape (R, {q.shape[1]}, {q.shape[2]}) with an odd R, "
+            f"got {tuple(pos_query.shape)} and {tuple(pos_emb.shape)}."
+        )
+    if rel_pos_bias is not None and (
+        rel_pos_bias.ndim != 3 or rel_pos_bias.shape[:2] != q.shape[:2] or rel_pos_bias.shape[2] % 2 == 0
+    ):
+        raise ValueError(
+            f"rel_pos_bias must have shape ({q.shape[0]}, {q.shape[1]}, W) with an odd W, "
+            f"got {tuple(rel_pos_bias.shape)}."
+        )
     rel_positions = pos_emb.shape[0] if pos_emb is not None else None
     if rel_pos_bias is not None:
         rel_positions = rel_pos_bias.shape[-1]
@@ -368,6 +443,24 @@ def packed_attention(
         if rel_pos_bias is not None:
             anchor = anchor + rel_pos_bias.sum()
         return v + 0.0 * anchor.to(v.dtype)
+    if dropout_p == 1.0:
+        # every weight is dropped, as nn.Dropout(1.0) on the attention weights would:
+        # zeros that keep the inputs in the autograd graph, the same on every backend
+        # (FlashAttention raises for it, FlexAttention has no dropout).
+        # Each input is zeroed on its own, so that no sum of large values overflows on the way.
+        out = 0.0 * q + 0.0 * k + 0.0 * v
+        for position_input in (pos_query, pos_emb, rel_pos_bias):
+            if position_input is not None:
+                out = out + (0.0 * position_input).sum().to(out.dtype)
+        return out
+    if scale <= 0.0:
+        # the kernels take a positive scale: the sign of the scale, or its zero, goes into the query side
+        # of the content scores and of the position term, which the scale multiplies alike
+        factor = -1.0 if scale < 0.0 else 0.0
+        q = factor * q
+        pos_query = None if pos_query is None else factor * pos_query
+        rel_pos_bias = None if rel_pos_bias is None else factor * rel_pos_bias
+        scale = -scale if scale < 0.0 else 1.0
     if q.is_cuda and q.dtype != torch.float64:
         # variable-length FlashAttention knows the utterance boundaries only, not a window inside them
         if pos_query is None and rel_pos_bias is None and context.key_window is None:
@@ -654,14 +747,23 @@ def _reference_packed_attention(
     """Dense attention one utterance at a time, with the same position-term convention as the kernels."""
     outputs = []
     center = (rel_pos_bias.shape[-1] - 1) // 2 if rel_pos_bias is not None else 0
+    # scaled before the product like torch's scaled_dot_product_attention:
+    # a product beyond the half-precision range whose scaled score is in range stays finite.
+    # A scale above one is applied after the product, so that it does not enlarge an operand beyond the range.
+    root = math.sqrt(min(scale, 1.0))
+    # float16 inputs are computed in float32 and the output is cast back: an intermediate of the forward
+    # or of the backward pass beyond the float16 range does not turn a representable result into inf
+    compute_dtype = torch.float32 if q.dtype == torch.float16 else q.dtype
     span_starts, span_ends = context.key_spans() if context.key_window is not None else (None, None)
     for start, end in context.sequence_slices:
         if end == start:
             continue
-        qi = q[start:end].transpose(0, 1)
-        ki = k[start:end].transpose(0, 1)
-        vi = v[start:end].transpose(0, 1)
-        scores = torch.matmul(qi, ki.transpose(-2, -1)) * scale
+        qi = q[start:end].transpose(0, 1).to(compute_dtype)
+        ki = k[start:end].transpose(0, 1).to(compute_dtype)
+        vi = v[start:end].transpose(0, 1).to(compute_dtype)
+        scores = torch.matmul(qi * root, (ki * root).transpose(-2, -1))
+        if scale > 1.0:
+            scores = scores * scale
         length = end - start
         rows = torch.arange(length, device=q.device).view(length, 1)
         cols = torch.arange(length, device=q.device).view(1, length)
@@ -670,15 +772,18 @@ def _reference_packed_attention(
             # advanced indices around the head slice move the heads to the last axis
             rel = (center - rows + cols).clamp(0, rel_pos_bias.shape[-1] - 1)
             bias = rel_pos_bias[start:end][rows, :, rel]
-            scores = scores + bias.permute(2, 0, 1) * scale
+            # a bias of another floating-point dtype: the sum and the softmax run in the wider of the two,
+            # as FlexAttention adds a float32 bias to half-precision scores
+            wider = torch.promote_types(scores.dtype, bias.dtype)
+            scores = scores.to(wider) + bias.permute(2, 0, 1).to(wider) * scale
         if span_starts is not None:
             keys = cols + start
             outside = (keys < span_starts[start:end].view(length, 1)) | (keys >= span_ends[start:end].view(length, 1))
             scores = scores.masked_fill(outside, float("-inf"))
-        weights = torch.softmax(scores, dim=-1)
+        weights = torch.softmax(scores, dim=-1).to(vi.dtype)
         if dropout_p > 0.0:
             weights = torch.nn.functional.dropout(weights, p=dropout_p, training=True)
-        outputs.append(torch.matmul(weights, vi).transpose(0, 1))
+        outputs.append(torch.matmul(weights, vi).transpose(0, 1).to(q.dtype))
     return torch.cat(outputs, dim=0)
 
 

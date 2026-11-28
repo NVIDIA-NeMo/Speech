@@ -474,7 +474,7 @@ override-dependencies = [
     "fsspec>=2026.6.0",
     "mlflow>=3.11.1",
     "cryptography>=46.0.5",
-    "wandb>=0.31.0",
+    "wandb>=0.31.2",
     "urllib3>=2.8.0",
     "opencv-python-headless; sys_platform == 'never'",
     "lxml>=6.1.0",

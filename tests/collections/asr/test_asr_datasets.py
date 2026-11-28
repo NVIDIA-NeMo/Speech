@@ -28,7 +28,7 @@ import torch.cuda
 from omegaconf import DictConfig, OmegaConf
 from torch.utils.data import DataLoader
 
-from nemo.collections.asr.data import audio_to_text_dataset
+from nemo.collections.asr.data import audio_to_text_dali, audio_to_text_dataset
 from nemo.collections.asr.data.audio_to_text import (
     DataStoreObject,
     TarredAudioToBPEDataset,
@@ -39,6 +39,7 @@ from nemo.collections.asr.data.audio_to_text_dali import (
     __DALI_MINIMUM_VERSION__,
     AudioToBPEDALIDataset,
     AudioToCharDALIDataset,
+    _resolve_window,
     is_dali_supported,
 )
 from nemo.collections.asr.data.audio_to_text_dataset import inject_dataloader_value_from_model_config
@@ -756,6 +757,56 @@ class TestASRDatasets:
         kwargs = to_decibels.call_args.kwargs
         assert kwargs['multiplier'] == pytest.approx(expected_multiplier)
         assert kwargs['cutoff_db'] == pytest.approx(expected_cutoff)
+
+    @pytest.mark.unit
+    def test_dali_dataset_rejects_unsupported_window(self):
+        """The DALI dataset rejects an unknown window before it builds any DALI operator, so DALI is mocked out."""
+        preprocessor_cfg = DictConfig(
+            {'_target_': 'nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor', 'window': 'hanning'}
+        )
+        with (
+            mock.patch.object(audio_to_text_dali, 'HAVE_DALI', True),
+            mock.patch.object(audio_to_text_dali, 'Pipeline', create=True),
+            pytest.raises(ValueError, match="'hanning' for the window parameter"),
+        ):
+            AudioToCharDALIDataset(
+                manifest_filepath='manifest.json',
+                device='cpu',
+                batch_size=1,
+                labels=self.labels,
+                preprocessor_cfg=preprocessor_cfg,
+            )
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("window_name", ["hanning", "Hann", "blackmanharris", 5, ["hann"]])
+    def test_dali_window_rejects_unsupported_name(self, window_name):
+        """An unknown window raises instead of silently becoming DALI's default Hann window."""
+        with pytest.raises(ValueError, match="window parameter"):
+            _resolve_window(window_name, window_size=320, periodic=False)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("periodic", [False, True])
+    @pytest.mark.parametrize(
+        "window_name, window_fn",
+        [
+            ("hann", torch.hann_window),
+            ("hamming", torch.hamming_window),
+            ("blackman", torch.blackman_window),
+            ("bartlett", torch.bartlett_window),
+        ],
+    )
+    def test_dali_window_builds_named_window(self, window_name, window_fn, periodic):
+        expected = window_fn(320, periodic=periodic).tolist()
+        assert _resolve_window(window_name, window_size=320, periodic=periodic) == expected
+
+    @pytest.mark.unit
+    def test_dali_window_ones(self):
+        assert _resolve_window("ones", window_size=320, periodic=False) == [1.0] * 320
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("window_name", ["none", None])
+    def test_dali_window_none_leaves_dali_default(self, window_name):
+        assert _resolve_window(window_name, window_size=320, periodic=False) is None
 
     @pytest.mark.unit
     def test_feature_to_text_char_dataset(self):

@@ -412,3 +412,28 @@ def filter_tokens_from_greedy_output(
     output["last_token"] = tokens[-1] if tokens else None
     output["last_token_idx"] = timesteps[-1] if timesteps else None
     return output, labels
+
+
+def preprocess_feature_buffers(
+    buffers: list[Tensor] | Tensor, right_paddings: list[int] | Tensor | None, device: torch.device | str
+) -> tuple[Tensor, Tensor]:
+    """
+    Stack the feature buffers into one batch on the device and compute their lengths.
+    Args:
+        buffers: (list[Tensor] | Tensor) List of (F, T) feature buffers, or one batched (B, F, T) tensor.
+        right_paddings: (list[int] | Tensor | None) Right padding per stream, subtracted from the lengths.
+        device: (torch.device | str) Device of the returned tensors.
+    Returns:
+        (tuple[Tensor, Tensor]) Feature buffers of shape (B, F, T) and their lengths of shape (B,).
+    """
+    if isinstance(buffers, Tensor):
+        # already batched by the bufferer: no stacking, and no host round trip for the lengths
+        feature_buffers = buffers
+        feature_buffer_lens = torch.full((buffers.shape[0],), buffers.shape[2], device=device, dtype=torch.long)
+    else:
+        feature_buffers = [f_buffer.unsqueeze_(0) for f_buffer in buffers]
+        feature_buffer_lens = torch.tensor([f_buffer.shape[2] for f_buffer in feature_buffers], device=device)
+        feature_buffers = torch.cat(feature_buffers)
+    if right_paddings is not None:
+        feature_buffer_lens = feature_buffer_lens - torch.as_tensor(right_paddings, device=feature_buffer_lens.device)
+    return feature_buffers.to(device), feature_buffer_lens

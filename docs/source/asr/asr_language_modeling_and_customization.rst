@@ -121,7 +121,7 @@ Support varies by decoder strategy:
      - ``use_cuda_graph_decoder``
      - ``true``
      - Requires ``loop_labels=True`` and ``blank_as_pad=True``
-   * - ``maes_batch``, ``malsd_batch`` (beam)
+   * - ``maes_batch``, ``malsd_batch``, ``frame_sync_batch`` (beam)
      - ``allow_cuda_graphs``
      - ``true``
      - Batched beam search strategies

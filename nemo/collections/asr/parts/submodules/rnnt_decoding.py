@@ -59,6 +59,7 @@ class TransducerDecodingStrategyType(PrettyStrEnum):
     ALSD = "alsd"
     MALSD_BATCH = "malsd_batch"
     MAES_BATCH = "maes_batch"
+    FRAME_SYNC_BATCH = "frame_sync_batch"
 
 
 TRANSDUCER_SUPPORTED_STRATEGIES: dict[TransducerModelType, set[TransducerDecodingStrategyType]] = {
@@ -78,6 +79,7 @@ TRANSDUCER_SUPPORTED_STRATEGIES: dict[TransducerModelType, set[TransducerDecodin
         TransducerDecodingStrategyType.BEAM,
         TransducerDecodingStrategyType.MAES,
         TransducerDecodingStrategyType.MALSD_BATCH,
+        TransducerDecodingStrategyType.FRAME_SYNC_BATCH,
     },
     TransducerModelType.MULTI_BLANK: {
         TransducerDecodingStrategyType.GREEDY,
@@ -96,6 +98,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                 Possible values are :
                 -   greedy, greedy_batch (for greedy decoding).
                 -   beam, tsd, alsd (for beam search decoding).
+                -   frame_sync_batch (for frame-synchronous beam search decoding of TDT models).
 
             compute_hypothesis_token_set: A bool flag, which determines whether to compute a list of decoded
                 tokens as well as the decoded string. Default is False in order to avoid double decoding
@@ -386,6 +389,18 @@ class AbstractRNNTDecoding(ConfidenceMixin):
             fusion_models = None
             fusion_models_alpha = None
 
+        beam_beta = 0.0
+        if strategy not in {TransducerDecodingStrategyType.GREEDY, TransducerDecodingStrategyType.GREEDY_BATCH}:
+            beam_beta = self.cfg.beam.get('beam_beta', 0.0) or 0.0
+            if beam_beta and strategy not in {
+                TransducerDecodingStrategyType.MALSD_BATCH,
+                TransducerDecodingStrategyType.FRAME_SYNC_BATCH,
+            }:
+                raise NotImplementedError(
+                    f"Model {model_type} with strategy `{strategy}` does not support `beam_beta`. "
+                    f"Recommended beam decoding strategy with `beam_beta` is `malsd_batch`."
+                )
+
         match strategy, model_type:
             # greedy strategy
             case TransducerDecodingStrategyType.GREEDY, TransducerModelType.RNNT:
@@ -641,6 +656,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                     fusion_models_alpha=fusion_models_alpha,
                     blank_lm_score_mode=self.cfg.beam.get('blank_lm_score_mode', BlankLMScoreMode.LM_WEIGHTED_FULL),
                     pruning_mode=self.cfg.beam.get('pruning_mode', PruningMode.LATE),
+                    beam_beta=beam_beta,
                     score_norm=self.cfg.beam.get('score_norm', True),
                     allow_cuda_graphs=self.cfg.beam.get('allow_cuda_graphs', True),
                     return_best_hypothesis=self.cfg.beam.get('return_best_hypothesis', True),
@@ -662,6 +678,7 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                     fusion_models_alpha=fusion_models_alpha,
                     blank_lm_score_mode=self.cfg.beam.get('blank_lm_score_mode', BlankLMScoreMode.LM_WEIGHTED_FULL),
                     pruning_mode=self.cfg.beam.get('pruning_mode', PruningMode.LATE),
+                    beam_beta=beam_beta,
                     score_norm=self.cfg.beam.get('score_norm', True),
                     allow_cuda_graphs=self.cfg.beam.get('allow_cuda_graphs', True),
                     return_best_hypothesis=self.cfg.beam.get('return_best_hypothesis', True),
@@ -669,6 +686,27 @@ class AbstractRNNTDecoding(ConfidenceMixin):
                     preserve_step_confidence=self.preserve_frame_confidence,
                     include_duration_confidence=self.tdt_include_duration_confidence,
                     confidence_method_cfg=self.confidence_method_cfg,
+                )
+            case TransducerDecodingStrategyType.FRAME_SYNC_BATCH, TransducerModelType.TDT:
+                self.decoding = tdt_beam_decoding.BeamBatchedTDTInfer(
+                    decoder_model=decoder,
+                    joint_model=joint,
+                    blank_index=self.blank_id,
+                    durations=self.durations,
+                    beam_size=self.cfg.beam.beam_size,
+                    search_type='frame_sync_batch',
+                    max_symbols_per_step=self.cfg.beam.get('max_symbols_per_step', 10),
+                    preserve_alignments=self.preserve_alignments,
+                    fusion_models=fusion_models,
+                    fusion_models_alpha=fusion_models_alpha,
+                    blank_lm_score_mode=self.cfg.beam.get('blank_lm_score_mode', BlankLMScoreMode.LM_WEIGHTED_FULL),
+                    pruning_mode=self.cfg.beam.get('pruning_mode', PruningMode.LATE),
+                    beam_beta=beam_beta,
+                    score_norm=self.cfg.beam.get('score_norm', True),
+                    allow_cuda_graphs=self.cfg.beam.get('allow_cuda_graphs', True),
+                    return_best_hypothesis=self.cfg.beam.get('return_best_hypothesis', True),
+                    enable_per_stream_biasing=self.cfg.beam.get('enable_per_stream_biasing', False),
+                    preserve_step_confidence=self.preserve_frame_confidence,
                 )
             case TransducerDecodingStrategyType.MAES_BATCH, TransducerModelType.RNNT:
                 self.decoding = rnnt_beam_decoding.BeamBatchedRNNTInfer(
@@ -1304,6 +1342,7 @@ class RNNTDecoding(AbstractRNNTDecoding):
                 -   greedy, greedy_batch (for greedy decoding).
 
                 -   beam, tsd, alsd (for beam search decoding).
+                -   frame_sync_batch (for frame-synchronous beam search decoding of TDT models).
 
             compute_hypothesis_token_set: A bool flag, which determines whether to compute a list of decoded
                 tokens as well as the decoded string. Default is False in order to avoid double decoding
@@ -1572,6 +1611,7 @@ class RNNTBPEDecoding(AbstractRNNTDecoding):
                 -   greedy, greedy_batch (for greedy decoding).
 
                 -   beam, tsd, alsd (for beam search decoding).
+                -   frame_sync_batch (for frame-synchronous beam search decoding of TDT models).
 
             compute_hypothesis_token_set: A bool flag, which determines whether to compute a list of decoded
                 tokens as well as the decoded string. Default is False in order to avoid double decoding

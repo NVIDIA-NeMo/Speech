@@ -533,3 +533,77 @@ class TestPackedConvSubsampling:
         packed = pack_encoder_output(torch.randn(1, 10, 8), torch.tensor([10]))
         with pytest.raises(NotImplementedError, match="reads beyond the 2 empty frames"):
             module.forward_packed(packed)
+
+
+class TestConvSubsamplingForwardModes:
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "subsampling,chunking_factor",
+        [
+            ("striding", -1),
+            ("striding", 1),
+            ("dw_striding", -1),
+            ("dw_striding", 1),
+            ("striding_conv1d", -1),
+            ("striding_conv1d", 1),
+            ("dw_striding_conv1d", -1),
+            ("dw_striding_conv1d", 1),
+            ("vggnet", -1),
+            ("vggnet", 1),
+        ],
+    )
+    def test_forward_with_lengths(self, subsampling, chunking_factor):
+        """Verify forward pass executes and returns valid shapes and lengths across all subsampling types."""
+        torch.manual_seed(0)
+        sub = ConvSubsampling(
+            subsampling=subsampling,
+            subsampling_factor=4,
+            feat_in=80,
+            feat_out=128,
+            conv_channels=64,
+            subsampling_conv_chunking_factor=chunking_factor,
+        ).eval()
+
+        batch_size = 2
+        time_len = 100
+        x = torch.randn(batch_size, time_len, 80)
+        lengths = torch.tensor([100, 77], dtype=torch.long)
+
+        out, out_lengths = sub(x, lengths)
+
+        assert out.ndim == 3
+        assert out.shape[0] == batch_size
+        assert out.shape[2] == 128
+        assert out_lengths.shape == (batch_size,)
+        assert out_lengths[0].item() == out.shape[1]
+        assert (out_lengths <= out.shape[1]).all()
+        assert out_lengths[1] < out_lengths[0]
+
+        # Value check 1: chunking -1 output equals chunking 1 output
+        if chunking_factor == -1:
+            torch.manual_seed(0)
+            sub_chunked = ConvSubsampling(
+                subsampling=subsampling,
+                subsampling_factor=4,
+                feat_in=80,
+                feat_out=128,
+                conv_channels=64,
+                subsampling_conv_chunking_factor=1,
+            ).eval()
+            sub_chunked.load_state_dict(sub.state_dict())
+            out_chunked, lengths_chunked = sub_chunked(x, lengths)
+            torch.testing.assert_close(out, out_chunked)
+            assert out_lengths.tolist() == lengths_chunked.tolist()
+
+        # Value check 2: shorter utterance alone gives same valid frames as in batch (for 2D stacks)
+        if sub.conv2d_subsampling:
+            single_x = x[1:2, : lengths[1]]
+            single_lengths = lengths[1:2]
+            single_out, single_out_lengths = sub(single_x, single_lengths)
+            valid_len = single_out_lengths[0].item()
+            torch.testing.assert_close(
+                out[1, :valid_len],
+                single_out[0, :valid_len],
+                atol=1e-6,
+                rtol=1e-5,
+            )

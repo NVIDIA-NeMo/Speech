@@ -1812,10 +1812,13 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
                     sub_enc = sub_enc.detach()
                     sub_transcripts = sub_transcripts.detach()
 
-                    # Update WER on each process without syncing
-                    if self.training:
-                        original_sync = self.wer._to_sync
-                        self.wer._to_sync = False
+                    # Suppress per-sub-batch metric sync so that compute() does
+                    # not issue a collective.  Without this, ranks that receive
+                    # different local batch sizes iterate a different number of
+                    # times, leading to a collective count mismatch and a
+                    # deadlock during validation.  See #16003.
+                    original_sync = self.wer._to_sync
+                    self.wer._to_sync = False
 
                     self.wer.update(
                         predictions=sub_enc,
@@ -1826,12 +1829,10 @@ class RNNTJoint(rnnt_abstract.AbstractRNNTJoint, Exportable, AdapterModuleMixin)
 
                     hyp = self.wer.get_hypotheses() if keep_hypotheses else []
 
-                    # Sync and all_reduce on all processes, compute global WER
                     wer, wer_num, wer_denom = self.wer.compute()
                     self.wer.reset()
 
-                    if self.training:
-                        self.wer._to_sync = original_sync
+                    self.wer._to_sync = original_sync
 
                     wers.append(wer)
                     wer_nums.append(wer_num)
@@ -2486,7 +2487,10 @@ class SampledRNNTJoint(RNNTJoint):
                 sub_enc = sub_enc.detach()
                 sub_transcripts = sub_transcripts.detach()
 
-                # Update WER on each process without syncing
+                # Suppress per-sub-batch metric sync — see RNNTJoint and #16003.
+                original_sync = self.wer._to_sync
+                self.wer._to_sync = False
+
                 self.wer.update(
                     predictions=sub_enc,
                     predictions_lengths=sub_enc_lens,
@@ -2494,9 +2498,10 @@ class SampledRNNTJoint(RNNTJoint):
                     targets_lengths=sub_transcript_lens,
                 )
 
-                # Sync and all_reduce on all processes, compute global WER
                 wer, wer_num, wer_denom = self.wer.compute()
                 self.wer.reset()
+
+                self.wer._to_sync = original_sync
 
                 wers.append(wer)
                 wer_nums.append(wer_num)

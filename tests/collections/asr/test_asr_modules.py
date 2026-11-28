@@ -16,15 +16,18 @@
 import copy
 import random
 
+import lightning.pytorch as pl
 import pytest
 import torch
 from omegaconf import OmegaConf
 
 from nemo.collections.asr import modules
+from nemo.collections.asr.models import EncDecCTCModel
 from nemo.collections.asr.parts.packed_sequence import (
     PackedEncoderActivations,
     pack_encoder_output,
     split_encoder_output,
+    unpack_encoder_output,
 )
 from nemo.collections.asr.parts.preprocessing.features import (
     FilterbankFeatures,
@@ -985,3 +988,360 @@ class TestASRModulesBasicTests:
 
         # assert vocab size
         assert jointnet.num_classes_with_blank == vocab_size + 1
+
+
+DEVICES = [
+    "cpu",
+    pytest.param(
+        "cuda",
+        marks=[pytest.mark.gpu, pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")],
+    ),
+]
+
+
+def _masked_frames(output: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
+    """Number of fully masked valid frames per sequence of a ``(B, D, T)`` output."""
+    valid = torch.arange(output.shape[2], device=output.device) < lengths.to(output.device)[:, None]
+    return ((output == 0).all(dim=1) & valid).sum(dim=1)
+
+
+class TestSpecAugmentLengthFollowing:
+    """The length-following mask policy of ``SpecAugment`` (``time_masks_per_frames``) and its schedule."""
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("device", DEVICES)
+    def test_time_mask_count_follows_each_sequence_length(self, device):
+        # Width one and distinct starts: the masked frames of a sequence count its masks.
+        augment = modules.SpectrogramAugmentation(
+            time_masks=3, min_time_masks=1, time_width=1, time_masks_per_frames=10
+        ).to(device)
+        lengths = torch.tensor([47, 20, 5, 2, 1, 0], device=device)
+        features = torch.ones(6, 4, 60, device=device)
+        min_masks = torch.tensor([1, 1, 1, 1, 1, 0])
+        max_masks = torch.tensor([12, 6, 5, 2, 1, 0])
+
+        torch.manual_seed(3)
+        counts = torch.stack(
+            [_masked_frames(augment(input_spec=features, length=lengths), lengths).cpu() for _ in range(400)]
+        )
+
+        assert torch.equal(counts.min(dim=0).values, min_masks)
+        assert torch.equal(counts.max(dim=0).values, max_masks)
+        # Uniform between the bounds; the tolerance is six standard errors of the widest range.
+        expected_mean = (min_masks + max_masks) / 2
+        torch.testing.assert_close(counts.float().mean(dim=0), expected_mean, rtol=0.0, atol=1.0)
+
+    @pytest.mark.unit
+    def test_freq_mask_count_and_width_ranges(self):
+        lengths = torch.tensor([9, 4])
+        features = torch.ones(2, 12, 9)
+
+        augment = modules.SpectrogramAugmentation(
+            freq_masks=5, min_freq_masks=2, freq_width=1, time_masks_per_frames=10
+        )
+        torch.manual_seed(5)
+        counts = torch.stack(
+            [(augment(input_spec=features, length=lengths) == 0).all(dim=2).sum(dim=1) for _ in range(300)]
+        )
+        assert counts.min() == 2 and counts.max() == 5
+        torch.testing.assert_close(counts.float().mean(dim=0), torch.full((2,), 3.5), rtol=0.0, atol=0.4)
+
+        # One mask per sequence: a contiguous band of 1 to freq_width bins, cut off at the last bin.
+        augment = modules.SpectrogramAugmentation(
+            freq_masks=1, min_freq_masks=1, freq_width=4, time_masks_per_frames=10
+        )
+        widths, cut_off = set(), 0
+        for _ in range(300):
+            masked = (augment(input_spec=features, length=lengths) == 0).all(dim=2)
+            for row in masked:
+                bins = row.nonzero().flatten()
+                assert bins[-1] - bins[0] + 1 == bins.numel()
+                widths.add(bins.numel())
+                cut_off += int(bins[-1] == 11)
+        assert widths == {1, 2, 3, 4}
+        assert cut_off > 0
+
+    @pytest.mark.unit
+    def test_time_masks_stay_inside_the_sequence(self):
+        augment = modules.SpectrogramAugmentation(
+            time_masks=4, min_time_masks=4, time_width=6, time_masks_per_frames=10, mask_value=-1.0
+        )
+        lengths = torch.tensor([30, 11])
+        features = torch.ones(2, 3, 30)
+
+        torch.manual_seed(7)
+        for _ in range(50):
+            output = augment(input_spec=features, length=lengths)
+            assert (output[1, :, 11:] == 1).all()
+            masked = (output == -1).all(dim=1).sum(dim=1)
+            # row 0: 4 to 12 masks of up to 6 frames, row 1: 4 to 8 masks
+            assert 4 <= masked[0] <= 30 and 4 <= masked[1] <= 11
+            assert ((output == 1) | (output == -1)).all()
+
+    @pytest.mark.unit
+    def test_lengths_beyond_the_padded_width_stay_in_their_row(self):
+        augment = modules.SpectrogramAugmentation(
+            time_masks=4, min_time_masks=4, time_width=6, time_masks_per_frames=10
+        )
+        features = torch.ones(3, 2, 16)
+
+        torch.manual_seed(11)
+        for _ in range(50):
+            output = augment(input_spec=features, length=torch.tensor([200, 0, -3]))
+            assert (output[1:] == 1).all()
+            assert (output[0] == 0).any()
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("device", DEVICES)
+    @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16, torch.float64])
+    @pytest.mark.parametrize("padded_width", [33, 40])
+    def test_forward_packed_matches_dense_masks(self, device, dtype, padded_width):
+        augment = modules.SpectrogramAugmentation(
+            freq_masks=3,
+            min_freq_masks=1,
+            freq_width=3,
+            time_masks=2,
+            min_time_masks=1,
+            time_width=5,
+            time_masks_per_frames=8,
+            mask_value=-2.0,
+            mask_schedule=[{"step": 4, "time_masks": 3}],
+        ).to(device)
+        augment.configure_short_recording_time_mask_cap(frame_duration_seconds=0.01, max_duration_seconds=0.1)
+        augment.set_num_updates(4)
+        lengths = torch.tensor([33, 7, 0, 18], device=device)
+        features = torch.randn(4, 9, padded_width, device=device, dtype=dtype)
+        packed = pack_encoder_output(features.transpose(1, 2), lengths)
+
+        torch.manual_seed(29)
+        expected = augment(input_spec=features, length=lengths)
+        torch.manual_seed(29)
+        actual = augment.forward_packed(packed)
+
+        assert actual.data.dtype == dtype and expected.dtype == dtype
+        assert (expected != features).any()
+        # the cap: at most floor(0.1 * 7) = 0 masked frames in the row of 7 frames
+        assert not (expected[1, :, :7] == -2.0).all(dim=0).any()
+        expected = pack_encoder_output(expected.transpose(1, 2), lengths)
+        torch.testing.assert_close(actual.data, expected.data, rtol=0.0, atol=0.0)
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("packed", [False, True])
+    def test_mask_schedule_follows_the_given_step(self, packed):
+        augment = modules.SpectrogramAugmentation(
+            freq_width=1,
+            time_width=1,
+            time_masks_per_frames=10,
+            mask_schedule=[
+                {"step": 2, "freq_masks": 2, "min_freq_masks": 2},
+                # the frequency counts of the stage before stay
+                {"step": 4, "time_masks": 1, "min_time_masks": 1},
+            ],
+        ).train()
+        lengths = torch.tensor([40, 15])
+        features = torch.ones(2, 6, 40)
+
+        masked_features, masked_frames = [], []
+        for step in range(6):
+            augment.set_num_updates(step)
+            if packed:
+                output = augment.forward_packed(pack_encoder_output(features.transpose(1, 2), lengths))
+                output = unpack_encoder_output(output, total_length=40).transpose(1, 2)
+            else:
+                output = augment(input_spec=features, length=lengths)
+            masked_frames.append(_masked_frames(output, lengths).tolist())
+            masked_features.append(
+                [(output[0] == 0).all(dim=1).sum().item(), (output[1, :, :15] == 0).all(dim=1).sum().item()]
+            )
+
+        assert masked_features == [[0, 0], [0, 0], [2, 2], [2, 2], [2, 2], [2, 2]]
+        assert masked_frames[:4] == [[0, 0]] * 4
+        assert all(1 <= row[0] <= 4 and 1 <= row[1] <= 2 for row in masked_frames[4:])
+
+    @pytest.mark.unit
+    def test_mask_schedule_requires_the_step_in_training_only(self):
+        augment = modules.SpectrogramAugmentation(
+            freq_width=1, time_masks_per_frames=10, mask_schedule=[{"step": 3, "freq_masks": 1}]
+        )
+        lengths = torch.tensor([12])
+        features = torch.ones(1, 6, 12)
+
+        augment.train()
+        with pytest.raises(RuntimeError, match="set_num_updates"):
+            augment(input_spec=features, length=lengths)
+        augment.eval()
+        assert torch.equal(augment(input_spec=features, length=lengths), features)
+        augment.train()
+        augment.set_num_updates(torch.tensor(0))
+        assert torch.equal(augment(input_spec=features, length=lengths), features)
+
+    @pytest.mark.unit
+    def test_state_dict_has_no_entry(self):
+        schedule = [{"step": 3, "freq_masks": 1}]
+        assert modules.SpectrogramAugmentation(freq_masks=2, time_masks=2).state_dict() == {}
+        assert modules.SpectrogramAugmentation(freq_masks=2, time_masks_per_frames=10).state_dict() == {}
+        assert modules.SpectrogramAugmentation(time_masks_per_frames=10, mask_schedule=schedule).state_dict() == {}
+
+    @pytest.mark.unit
+    def test_short_recording_cap_applies_to_length_following_masks(self):
+        kwargs = dict(time_masks=4, min_time_masks=4, time_width=12, time_masks_per_frames=20)
+        capped = modules.SpectrogramAugmentation(**kwargs)
+        capped.configure_short_recording_time_mask_cap(
+            frame_duration_seconds=0.01, max_duration_seconds=1.0, max_mask_fraction=0.1
+        )
+        baseline = modules.SpectrogramAugmentation(**kwargs)
+        lengths = torch.tensor([50, 9, 120])
+        features = torch.ones(3, 8, 120)
+
+        for seed in range(20):
+            torch.manual_seed(seed)
+            output = capped(input_spec=features, length=lengths)
+            torch.manual_seed(seed)
+            expected = baseline(input_spec=features, length=lengths)
+            masked = _masked_frames(output, lengths)
+            assert masked[0] <= 5 and masked[1] == 0
+            torch.testing.assert_close(output[2], expected[2], rtol=0.0, atol=0.0)
+            assert _masked_frames(expected, lengths)[0] > 5
+
+    @pytest.mark.unit
+    def test_instantiates_from_config(self):
+        config = OmegaConf.create(
+            {
+                "_target_": "nemo.collections.asr.modules.SpectrogramAugmentation",
+                "freq_width": 16,
+                "time_width": 20,
+                "time_masks_per_frames": 60,
+                "mask_schedule": [
+                    {"step": 1000, "freq_masks": 2, "time_masks": 1},
+                    {"step": 2000, "freq_masks": 5, "min_freq_masks": 2, "min_time_masks": 1},
+                ],
+            }
+        )
+        augment = modules.SpectrogramAugmentation.from_config_dict(config)
+
+        assert augment.spec_augment._stage_steps.tolist() == [1000, 2000]
+        assert augment.spec_augment._stage_counts.tolist() == [[0, 0, 0, 0], [2, 1, 0, 0], [5, 1, 2, 1]]
+
+    @pytest.mark.unit
+    def test_model_training_gives_the_global_step_to_the_schedule(self):
+        config = OmegaConf.create(
+            {
+                "preprocessor": {"_target_": "nemo.collections.asr.modules.AudioToMelSpectrogramPreprocessor"},
+                "spec_augment": {
+                    "_target_": "nemo.collections.asr.modules.SpectrogramAugmentation",
+                    "freq_width": 4,
+                    "time_width": 5,
+                    "time_masks_per_frames": 20,
+                    "mask_schedule": [{"step": 2, "freq_masks": 2, "time_masks": 1}],
+                },
+                "encoder": {
+                    "_target_": "nemo.collections.asr.modules.ConvASREncoder",
+                    "feat_in": 64,
+                    "activation": "relu",
+                    "conv_mask": True,
+                    "jasper": [
+                        {
+                            "filters": 16,
+                            "repeat": 1,
+                            "kernel": [1],
+                            "stride": [1],
+                            "dilation": [1],
+                            "dropout": 0.0,
+                            "residual": False,
+                        }
+                    ],
+                },
+                "decoder": {
+                    "_target_": "nemo.collections.asr.modules.ConvASRDecoder",
+                    "feat_in": 16,
+                    "num_classes": 3,
+                    "vocabulary": ["a", "b", "c"],
+                },
+                "optim": {"name": "sgd", "lr": 0.001},
+            }
+        )
+        model = EncDecCTCModel(cfg=config)
+        batch = (
+            torch.randn(2, 8000),
+            torch.tensor([8000, 5000]),
+            torch.tensor([[0, 1], [2, 0]]),
+            torch.tensor([2, 1]),
+        )
+        assert not any("schedule_step" in key for key in model.state_dict())
+
+        trainer = pl.Trainer(
+            max_steps=4, accelerator="cpu", logger=False, enable_checkpointing=False, enable_progress_bar=False
+        )
+        trainer.fit(model, train_dataloaders=torch.utils.data.DataLoader([batch] * 4, collate_fn=lambda x: x[0]))
+
+        # the last of the four training batches started at global step 3
+        assert model.spec_augmentation.spec_augment.schedule_step.item() == 3
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        ("kwargs", "match"),
+        [
+            ({"min_time_masks": 1, "time_masks": 2}, "require time_masks_per_frames"),
+            ({"min_freq_masks": 1, "freq_masks": 2}, "require time_masks_per_frames"),
+            ({"mask_schedule": [{"step": 1, "time_masks": 1}]}, "require time_masks_per_frames"),
+            ({"time_masks_per_frames": 0, "time_masks": 1}, "must be a positive integer"),
+            ({"time_masks_per_frames": 2.5, "time_masks": 1}, "must be a positive integer"),
+            (
+                {"time_masks_per_frames": 10, "time_masks": 1, "time_width": 0.1},
+                "time_width must be a positive integer",
+            ),
+            ({"time_masks_per_frames": 10, "freq_masks": 1, "freq_width": 0}, "freq_width must be a positive integer"),
+            ({"time_masks_per_frames": 10, "time_masks": 1, "min_time_masks": 2}, "0 <= min_"),
+            ({"time_masks_per_frames": 10, "freq_masks": 1, "min_freq_masks": -1}, "0 <= min_"),
+            ({"time_masks_per_frames": 10, "time_masks": 1.5}, "must be integers"),
+            ({"time_masks_per_frames": 10, "time_masks": 1, "use_vectorized_spec_augment": False}, "vectorized"),
+            ({"time_masks_per_frames": 10, "time_masks": 1, "use_numba_spec_augment": True}, "Numba"),
+            ({"time_masks_per_frames": 10, "mask_schedule": [{"time_masks": 1}]}, "takes 'step'"),
+            ({"time_masks_per_frames": 10, "mask_schedule": [{"step": 1, "time_width": 3}]}, "takes 'step'"),
+            ({"time_masks_per_frames": 10, "mask_schedule": [5]}, "takes 'step'"),
+            ({"time_masks_per_frames": 10, "mask_schedule": {"step": 1}}, "must be a list of stages"),
+            ({"time_masks_per_frames": 10, "mask_schedule": "linear"}, "must be a list of stages"),
+            (
+                {"time_masks_per_frames": 10, "mask_schedule": [{"step": 5, "time_masks": 1}, {"step": 2}]},
+                "non-decreasing",
+            ),
+            ({"time_masks_per_frames": 10, "mask_schedule": [{"step": 1, "min_time_masks": 1}]}, "0 <= min_"),
+        ],
+    )
+    def test_rejects_invalid_options(self, kwargs, match):
+        with pytest.raises(ValueError, match=match):
+            modules.SpectrogramAugmentation(**kwargs)
+
+    @pytest.mark.unit
+    @pytest.mark.gpu
+    @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")
+    def test_one_cuda_graph_covers_all_schedule_stages(self):
+        augment = modules.SpectrogramAugmentation(
+            freq_width=1,
+            time_width=1,
+            time_masks_per_frames=10,
+            mask_schedule=[
+                {"step": 3, "freq_masks": 2, "min_freq_masks": 2},
+                {"step": 5, "time_masks": 2, "min_time_masks": 2},
+            ],
+        )
+        augment = augment.cuda().train()
+        lengths = torch.tensor([40, 15], device="cuda")
+        features = torch.ones(2, 6, 40, device="cuda")
+        packed = pack_encoder_output(features.transpose(1, 2), lengths)
+
+        augment.set_num_updates(0)
+        augment.forward_packed(packed)
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            output = augment.forward_packed(packed).data
+
+        masked_features, masked_frames = [], []
+        for step in range(1, 6):
+            augment.set_num_updates(step)
+            graph.replay()
+            masked_features.append((output[:40] == 0).all(dim=0).sum().item())
+            masked_frames.append((output[:40] == 0).all(dim=1).sum().item())
+
+        assert masked_features == [0, 0, 2, 2, 2]
+        assert masked_frames[:4] == [0, 0, 0, 0] and 2 <= masked_frames[4] <= 8

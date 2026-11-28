@@ -157,6 +157,64 @@ and ``time_*`` parameters).
 
 You can use any combination of ``Cutout``, frequency/time ``SpecAugment``, or neither of them.
 
+Length-following SpecAugment
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+By default every utterance gets the same number of time masks, and a float ``time_width`` makes their width follow the utterance length.
+Setting ``time_masks_per_frames`` selects a second mask policy in which the number of time masks follows the length instead, with masks of a fixed maximum width.
+``time_masks`` then counts masks per ``time_masks_per_frames`` frames:
+an utterance of ``L`` frames gets up to ``time_masks * max(L // time_masks_per_frames, 2)`` time masks, and never more than ``L``.
+
+In this policy:
+
+* The number of masks is drawn for every utterance, uniformly between a minimum and the maximum:
+  ``min_time_masks`` (a count per utterance) and the length-dependent maximum above for time masks, ``min_freq_masks`` and ``freq_masks`` for frequency masks.
+  The count of an utterance depends on its own length only, not on the other utterances of the batch.
+* Every mask starts at a distinct random position and has a width between 1 and ``time_width`` or ``freq_width``.
+  A mask that would run past the end of the utterance or of the frequency axis is cut off there.
+* All random numbers are drawn on the device of the features, for padded and for sequence-packed batches; ``rng`` is not used.
+
+The maximum is computed for at least two units of ``time_masks_per_frames`` frames, and the mask width does not shrink with the utterance.
+An utterance shorter than that can therefore lose most of its frames; choose ``time_width`` and ``time_masks`` for the shortest utterances of the training data.
+
+``mask_schedule`` changes the mask counts during training.
+It is a list of stages, each with a ``step`` and the counts that apply from that step on;
+a count that a stage leaves out keeps its value of the stage before, and before the first stage the values given outside the schedule apply.
+The following example trains without masks for 1,000 steps and reaches its full strength after 3,000 steps:
+
+.. code-block:: yaml
+
+  model:
+    ...
+    spec_augment:
+      _target_: nemo.collections.asr.modules.SpectrogramAugmentation
+      freq_width: 16             # Frequency masks of 1 to 16 bins
+      time_width: 20             # Time masks of 1 to 20 frames
+      time_masks_per_frames: 100 # Count time masks per 100 frames
+      mask_schedule:
+        - step: 1000             # 0 to 2 frequency masks; up to 1 time mask per 100 frames
+          freq_masks: 2
+          time_masks: 1
+        - step: 2000             # 1 to 3 frequency masks; at least 1 time mask, up to 2 per 100 frames
+          freq_masks: 3
+          min_freq_masks: 1
+          time_masks: 2
+          min_time_masks: 1
+        - step: 3000             # 2 to 5 frequency masks; at least 2 time masks, up to 4 per 100 frames
+          freq_masks: 5
+          min_freq_masks: 2
+          time_masks: 4
+          min_time_masks: 2
+
+The ``step`` is the trainer's global step, the number of optimizer steps done, so a training resumed from a checkpoint continues its schedule.
+The models derived from ``ASRModel`` (CTC, transducer, hybrid and attention encoder-decoder models) pass it to the augmentation before every training batch.
+Other code that trains with a ``mask_schedule`` calls ``SpectrogramAugmentation.set_num_updates(step)`` itself; a training forward without it raises an error.
+
+The policy needs an integer ``time_width`` and the vectorized PyTorch implementation;
+it raises an error with ``use_numba_spec_augment: true`` or ``use_vectorized_spec_augment: false``.
+With the short-recording cap of SpeechLM (``configure_short_recording_time_mask_cap``), a short recording gets at most one time mask, whatever ``min_time_masks`` says.
+Without ``time_masks_per_frames`` the augmentation behaves as before.
+
 You can also add audio augmentation pipelines via an ``augmentor`` section in ``train_ds``.
 
 .. caution::

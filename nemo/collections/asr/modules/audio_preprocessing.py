@@ -16,6 +16,7 @@
 import math
 import random
 from abc import ABC, abstractmethod
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -508,6 +509,30 @@ class SpectrogramAugmentation(NeuralModule):
             Defaults to 25.
         use_numba_spec_augment: use numba code for Spectrogram augmentation
         use_vectorized_spec_augment: use vectorized code for Spectrogram augmentation
+        time_masks_per_frames (int): selects the length-following SpecAugment policy.
+            ``time_masks`` then counts masks per ``time_masks_per_frames`` frames instead of per sequence:
+            a sequence of ``L`` frames gets up to ``time_masks * max(L // time_masks_per_frames, 2)`` time masks,
+            and never more than ``L``.
+            The number of masks is drawn per sequence, uniformly between the minimum and that maximum
+            (frequency masks: between ``min_freq_masks`` and ``freq_masks``).
+            Every mask starts at a distinct random position,
+            has a width drawn uniformly from 1 to ``time_width`` or ``freq_width`` (inclusive),
+            and is cut off at the end of the sequence or of the frequency axis.
+            All random numbers are drawn on the device of the input; ``rng`` is not used.
+            Requires an integer ``time_width`` and the vectorized implementation without Numba.
+            Defaults to None, the fixed mask counts.
+        min_freq_masks (int): smallest number of frequency masks per sequence, with the length-following policy.
+            Defaults to 0.
+        min_time_masks (int): smallest number of time masks per sequence, with the length-following policy.
+            Defaults to 0.
+        mask_schedule (list): stages that replace the mask counts of the length-following policy
+            from a training step on.
+            Each stage is a mapping with the key ``step`` and any of ``freq_masks``, ``time_masks``,
+            ``min_freq_masks`` and ``min_time_masks``;
+            a count that a stage does not give keeps its value of the stage before.
+            Before the first stage the arguments above apply.
+            The step is the one given to ``set_num_updates``, which the ASR models call with the trainer's global step.
+            Defaults to None, no schedule.
 
     """
 
@@ -537,8 +562,18 @@ class SpectrogramAugmentation(NeuralModule):
         mask_value=0.0,
         use_vectorized_spec_augment: bool = True,
         use_numba_spec_augment: bool = False,
+        *,
+        time_masks_per_frames: int | None = None,
+        min_freq_masks: int = 0,
+        min_time_masks: int = 0,
+        mask_schedule: Sequence[Mapping[str, int]] | None = None,
     ):
         super().__init__()
+
+        if time_masks_per_frames is not None and use_numba_spec_augment:
+            raise ValueError(
+                "time_masks_per_frames is not implemented by the Numba kernel: unset use_numba_spec_augment"
+            )
 
         if rect_masks > 0:
             self.spec_cutout = SpecCutout(
@@ -550,7 +585,8 @@ class SpectrogramAugmentation(NeuralModule):
             # self.spec_cutout.to(self._device)
         else:
             self.spec_cutout = lambda input_spec: input_spec
-        if freq_masks + time_masks > 0:
+        length_following_options = (time_masks_per_frames is not None, min_freq_masks, min_time_masks, mask_schedule)
+        if freq_masks + time_masks > 0 or any(length_following_options):
             self.spec_augment = SpecAugment(
                 freq_masks=freq_masks,
                 time_masks=time_masks,
@@ -559,6 +595,10 @@ class SpectrogramAugmentation(NeuralModule):
                 rng=rng,
                 mask_value=mask_value,
                 use_vectorized_code=use_vectorized_spec_augment,
+                time_masks_per_frames=time_masks_per_frames,
+                min_freq_masks=min_freq_masks,
+                min_time_masks=min_time_masks,
+                mask_schedule=mask_schedule,
             )
         else:
             self.spec_augment = lambda input_spec, length: input_spec
@@ -605,6 +645,19 @@ class SpectrogramAugmentation(NeuralModule):
                     "This can change augmentation RNG, outputs and throughput, including for long recordings."
                 )
             self.spec_augment_numba = None
+
+    def set_num_updates(self, num_updates: int | torch.Tensor) -> None:
+        """Set the training step that ``mask_schedule`` selects its stage by.
+
+        The ASR models call this before every training batch with the trainer's global step.
+        Code that trains the module without them calls it itself;
+        a training forward with a ``mask_schedule`` raises otherwise.
+
+        Args:
+            num_updates: number of optimizer steps done so far, a Python integer or a scalar tensor.
+        """
+        if isinstance(self.spec_augment, SpecAugment):
+            self.spec_augment.set_num_updates(num_updates)
 
     @typecheck()
     def forward(self, input_spec, length):
@@ -864,6 +917,10 @@ class SpectrogramAugmentationConfig:
     rng: Optional[Any] = None  # random.Random() type
     use_numba_spec_augment: bool = False
     use_vectorized_spec_augment: bool = True
+    time_masks_per_frames: Optional[int] = None
+    min_freq_masks: int = 0
+    min_time_masks: int = 0
+    mask_schedule: Optional[Any] = None  # list of stages, see SpectrogramAugmentation
 
 
 @dataclass

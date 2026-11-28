@@ -206,10 +206,13 @@ class NumberCleaner:
         inflect = inflect_engine()
         if self.currency:
             return_string = inflect.number_to_words(whole_num)
-            return_string += " dollar" if whole_num == 1 else " dollars"
+            # whole_num still carries the currency sign, so it never equals the integer 1.
+            dollars = int(re.sub(r'[^0-9]', '', whole_num) or '0')
+            return_string += " dollar" if dollars == 1 else " dollars"
             if decimal:
                 return_string += " and " + inflect_engine().number_to_words(decimal)
-                return_string += " cent" if whole_num == decimal else " cents"
+                cents = int(re.sub(r'[^0-9]', '', decimal) or '0')
+                return_string += " cent" if cents == 1 else " cents"
             self.reset()
             return return_string
 

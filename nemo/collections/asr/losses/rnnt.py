@@ -444,7 +444,7 @@ class RNNTLoss(Loss):
     def supports_logprobs_input(self) -> bool:
         """
         Whether the selected loss can be computed from target and blank log-probabilities (see `forward_from_logprobs`)
-        instead of the full Joint output. Required by the Joint turbo kernels, which do not materialize the logits.
+        instead of the full Joint output. The training joint kernels use this interface to pass the two score tensors directly to the loss.
         """
         return getattr(self._loss, 'supports_logprobs_input', False)
 

@@ -324,9 +324,9 @@ class EncDecHybridRNNTCTCBPEModel(EncDecHybridRNNTCTCModel, ASRBPEMixin):
         self.decoder = EncDecHybridRNNTCTCBPEModel.from_config_dict(new_decoder_config)
 
         del self.loss
-        if self.joint.uses_turbo_kernel:
-            # the default loss can't be computed from the log-probabilities returned by the Joint turbo kernel
-            self.loss = self._make_loss_for_joint_turbo_kernel()
+        if self.joint.uses_training_kernel:
+            # the default loss can't be computed from the log-probabilities returned by the Joint training kernel
+            self.loss = self._make_loss_for_joint_training_kernel()
         else:
             self.loss = RNNTLoss(num_classes=self.joint.num_classes_with_blank - 1)
 

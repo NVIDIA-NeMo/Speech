@@ -581,7 +581,7 @@ The Joint model config has several essential components which we discuss below :
 
 * ``fused_batch_size``: When the above flag is set to True, the model will have two distinct "batch sizes". The batch size provided in the three data loader configs (``model.*_ds.batch_size``) will now be the ``Acoustic model`` batch size, whereas the ``fused_batch_size`` will be the batch size of the ``Prediction model``, the ``Joint model``, the ``transducer loss`` module and the ``decoding`` module.
 
-* ``turbo_kernel``: Optional memory-efficient Joint kernel used to compute the loss during training, see :ref:`Joint Turbo Kernel <joint-turbo-kernel>`. Disabled by default.
+* ``training_kernel``: Optional memory-efficient Joint kernel used to compute the loss during training, see :ref:`Joint Training Kernels <joint-turbo-kernel>`. Disabled by default.
 
 * ``jointnet.joint_hidden``: The hidden intermediate dimension of the joint network.
 
@@ -684,19 +684,19 @@ The fused operation goes as follows :
 
 .. _joint-turbo-kernel:
 
-Joint Turbo Kernel
-^^^^^^^^^^^^^^^^^^
+Joint Training Kernels
+^^^^^^^^^^^^^^^^^^^^^^
 
 The Joint output of size ``[B, T, U+1, V]`` is usually the largest tensor in Transducer training, and the same amount of memory
 is required for its gradient. The RNN-T loss, however, needs only the log-probabilities of the target and blank labels,
-two tensors of size ``[B, T, U+1]``. The Joint turbo kernel (``joint.turbo_kernel``) computes these log-probabilities directly
+two tensors of size ``[B, T, U+1]``. The fused vocabulary kernel (``joint.training_kernel.type=fused_vocab``) computes these log-probabilities directly
 from the Joint hidden representation ``[B, T, U+1, H]``: the vocabulary projection and log-softmax are fused in a single GPU
 kernel, and the logits are recomputed in the backward pass instead of being stored. The Joint output and its gradient
 are never materialized, so the memory used by the Joint and the loss does not depend on the vocabulary size, and the batch
 does not need to be split, in contrast to the fused batch step described above.
 
 For example, for ``B=64``, ``T=150``, ``U=72``, ``H=640`` in ``bfloat16`` precision, the Joint and the ``turbo_rnnt`` loss
-(forward and backward) use about 3.1 GB of GPU memory with the turbo kernel for any vocabulary size, compared with 4.8 GB
+(forward and backward) use about 3.1 GB of GPU memory with the fused vocabulary kernel for any vocabulary size, compared with 4.8 GB
 for the standard Joint with the vocabulary of 1025 tokens, and 23.5 GB with the vocabulary of 8193 tokens. The speed is
 similar to the standard Joint or better (measured on RTX A6000 with
 ``tests/collections/asr/turbo_transducer/benchmark_rnnt_joint_multi.py``).
@@ -709,10 +709,10 @@ not affected: the parameters of the Joint are the same, so the kernel can be ena
   joint:
     _target_: nemo.collections.asr.modules.RNNTJoint
     log_softmax: null
-    fuse_loss_wer: false  # incompatible with the turbo kernel
+    fuse_loss_wer: false  # incompatible with a training kernel
 
-    turbo_kernel:
-      type: fused_vocab  # options: null (disabled), fused_vocab
+    training_kernel:
+      type: fused_vocab  # options: null (disabled), fused_vocab, flash
       backend: triton  # the only implemented backend
       use_high_precision_mm: false
       mm_full_precision: false
@@ -732,9 +732,11 @@ not affected: the parameters of the Joint are the same, so the kernel can be ena
   loss:
     loss_name: "turbo_rnnt"  # the loss must accept target and blank log-probabilities
 
-The ``turbo_kernel`` section has the following parameters (unknown parameters are rejected):
+When switching kernels, replace the section with the options for the selected type.
 
-* ``type``: The kernel type. ``null`` (or a missing ``turbo_kernel`` section) disables the kernel, the other parameters are ignored. ``fused_vocab`` fuses the vocabulary projection with log-softmax; the Joint hidden representation is still materialized.
+* ``type``: The kernel type. ``null`` (or a missing ``training_kernel`` section) disables the kernel, the other parameters are ignored. ``fused_vocab`` fuses the vocabulary projection with log-softmax; the Joint hidden representation is still materialized. ``flash`` scores packed tiles; see `Flash joint scoring for RNN-T`_.
+
+Flash accepts ``max_joint_rows`` (default 200000). The following options apply to ``fused_vocab``:
 
 * ``backend``: ``triton`` (default, requires Triton) is the only implemented backend; ``null`` selects it automatically. ``cutile`` is reserved for the planned cuTile backend: requesting it raises ``NotImplementedError``.
 
@@ -760,11 +762,11 @@ The ``turbo_kernel`` section has the following parameters (unknown parameters ar
 
 Requirements and limitations:
 
-* A CUDA GPU and the ``turbo_rnnt`` loss (see :ref:`Turbo-RNNT Loss <turbo-rnnt-loss>`) without gradient clamping (``clamp``): clamping is applied to the gradient for the Joint output, which is not materialized. An incompatible loss is rejected when the model is constructed.
+* A CUDA GPU and the ``turbo_rnnt`` loss (see :ref:`Turbo-RNNT Loss <turbo-rnnt-loss>`) are required. Only the Flash kernel supports logit-gradient clamping (``clamp``). An incompatible loss is rejected when the model is constructed.
 
 * The loss does not depend on the temperature set by the decoding config (``decoding.temperature``): the temperature is applied only in decoding. Note that the Joint output of the standard Joint with ``log_softmax: true`` is scaled by the temperature, so the loss computed from it differs if the temperature is not 1.
 
-* The ``triton`` backend supports Triton 3.3 and newer (the version installed with PyTorch 2.7). The kernels are autotuned: on the first training steps (separately for small and for full-size batches) Triton compiles several variants of each kernel and selects the fastest one for the GPU, which takes up to a minute for large vocabularies. The result is cached on disk (``~/.triton/cache``, or the directory set by the ``TRITON_CACHE_DIR`` environment variable) and reused by the next runs. Triton 3.3 does not cache the results: the kernels are autotuned in each run.
+* The ``triton`` backend supports Triton 3.3 and newer (the version installed with PyTorch 2.7). The fused vocabulary kernels are autotuned: on the first training steps (separately for small and for full-size batches) Triton compiles several variants of each kernel and selects the fastest one for the GPU, which takes up to a minute for large vocabularies. The result is cached on disk (``~/.triton/cache``, or the directory set by the ``TRITON_CACHE_DIR`` environment variable) and reused by the next runs. Triton 3.3 does not cache the results: the kernels are autotuned in each run.
 
 * Not compatible with ``fuse_loss_wer``, ``preserve_memory`` and the Joint with extra outputs (e.g., TDT models).
 
@@ -866,7 +868,7 @@ Since the loss does not materialize additional full-size tensors, fused Joint an
 required to limit the memory used by the loss itself. Fused computation can still reduce the memory used by the Joint output
 and its gradient (they are computed in sub-batches with the padding trimmed), so disable it for faster training when
 the full Joint output fits in memory. To avoid materializing the Joint output without splitting the batch, use
-the :ref:`Joint Turbo Kernel <joint-turbo-kernel>`.
+the :ref:`Joint Training Kernels <joint-turbo-kernel>`.
 
 Gradient clamping is supported with the ``clamp`` argument (as for ``warprnnt_numba``): when set to a positive value,
 the gradient of each per-utterance loss for the Joint output is clamped to ``[-clamp, clamp]`` before the reduction of the loss
@@ -891,6 +893,33 @@ RNNT models automatically warm up Numba loss kernels on CUDA before training, in
 This reduces memory retained during compilation without changing random states.
 
 Custom training loops can call ``RNNTLoss.warmup(device)`` before allocating batch activations.
+
+Flash joint scoring for RNN-T
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The Flash training backend projects the encoder and predictor once, packs valid alignment positions
+into tiles, and computes the target and blank log probabilities for each tile. Turbo RNN-T evaluates
+the loss on these two score tensors. Backward recomputes the joint intermediates one tile at a time.
+Flash uses the standard CUDA joint with Triton. Joint adapters, lattice pruning and the auxiliary
+consistency loss are unsupported. Decoding uses the ordinary joint.
+
+.. code-block:: yaml
+
+  model:
+    joint:
+      training_kernel:
+        type: flash
+        max_joint_rows: 200000
+    loss:
+      loss_name: turbo_rnnt
+      turbo_rnnt_kwargs:
+        fastemit_lambda: 0.0
+        clamp: -1.0
+
+For a vocabulary of size V (including blank), the logits for R rows occupy R × V × element size
+bytes. Hidden states, score planes, recurrence state and gradients also contribute to peak memory.
+Each tile draws its own dropout seed and reuses it in backward. Changing the row limit can therefore
+change training results when joint dropout is enabled.
 
 FastEmit Regularization
 ^^^^^^^^^^^^^^^^^^^^^^^

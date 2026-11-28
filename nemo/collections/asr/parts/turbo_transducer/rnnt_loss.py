@@ -47,7 +47,7 @@ class TurboRnntLoss(nn.Module):
 
     Gradient clamping (`clamp`) is applied to the gradient of each per-utterance loss for the logits before it is
     multiplied by the upstream gradient (as in `warprnnt_numba`), so it does not depend on the reduction of the loss
-    and the batch size. Clamping requires the logits and is not available in `forward_from_logprobs`.
+    and the batch size. For precomputed scores, the joint must apply the configured clamp to its logits.
     """
 
     def __init__(
@@ -76,6 +76,7 @@ class TurboRnntLoss(nn.Module):
         self.fastemit_lambda = fastemit_lambda
         self.clamp = float(clamp) if clamp > 0 else 0.0  # 0.0: no clamping
         self.reduction = None  # NB: `RNNTLoss` wrapper reads/overrides this attribute and applies reduction itself
+        self.joint_clamps_logits = False
         self.mask_non_finite = mask_non_finite
         self.warn_non_finite = warn_non_finite
         self.backend = TurboTransducerBackend(backend)
@@ -89,9 +90,9 @@ class TurboRnntLoss(nn.Module):
     def supports_logprobs_input(self) -> bool:
         """
         Whether the loss can be computed from target/blank log-probabilities (see `forward_from_logprobs`).
-        Gradient clamping is applied to the gradient for the logits, so it requires the logits.
+        A positive clamp requires scores from a joint that clamps its logits gradients.
         """
-        return self.clamp == 0.0
+        return self.clamp == 0.0 or self.joint_clamps_logits
 
     @triton_required
     def forward(

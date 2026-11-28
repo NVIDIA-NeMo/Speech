@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Integration of the Joint turbo kernel (`RNNTJoint(turbo_kernel=...)`) with the Joint module and the RNN-T loss."""
+"""Integration of the Joint turbo kernel (`RNNTJoint(training_kernel=...)`) with the Joint module and the RNN-T loss."""
 
 from pathlib import Path
 
@@ -28,8 +28,9 @@ from nemo.collections.asr.modules.rnnt_abstract import AbstractRNNTJoint
 from nemo.collections.asr.parts.turbo_transducer.rnnt_consistency import ConsistencyRNNTLoss
 from nemo.collections.asr.parts.turbo_transducer.rnnt_logprobs import rnnt_logprobs_torch
 from nemo.collections.asr.parts.turbo_transducer.types import (
-    TurboJointKernelConfig,
-    TurboJointKernelType,
+    FusedVocabKernelConfig,
+    TrainingKernelConfig,
+    TrainingKernelType,
     TurboJointPruningConfig,
     TurboJointPruningType,
 )
@@ -61,7 +62,7 @@ def _jointnet_config(dropout: float = 0.0, activation: str = "relu"):
     }
 
 
-def _turbo_kernel_config(full_precision: bool = True, **kwargs):
+def _training_kernel_config(full_precision: bool = True, **kwargs):
     """Flat turbo kernel config; full precision allows comparing with the reference computed from the logits"""
     return {
         "type": "fused_vocab",
@@ -95,24 +96,21 @@ class _PlainJoint(AbstractRNNTJoint):
         return encoder_output + predictor_output
 
 
-class TestTurboJointKernelConfig:
+class TestTrainingKernelConfig:
     @pytest.mark.unit
     def test_defaults(self):
-        for config in [None, {}, {"type": None}]:
-            kernel_config = TurboJointKernelConfig.from_config(config)
-            assert kernel_config.kernel_type is None
-            assert not kernel_config.uses_pruning
-            assert kernel_config.get_active_pruning(current_step=10) is None
+        for config in [None, {}, {"type": None}, {"max_joint_rows": 1000}, {"type": None, "max_joint_rows": 1000}]:
+            assert TrainingKernelConfig.from_config(config) == TrainingKernelConfig()
 
     @pytest.mark.unit
     @pytest.mark.parametrize("as_dict_config", [False, True])
     def test_flat_parameters_and_nested_pruning(self, as_dict_config: bool):
-        config = _turbo_kernel_config(
+        config = _training_kernel_config(
             full_precision=False, pruning={"type": "two_pass", "range_size": 8, "start_step": 100}
         )
         config["mm_full_precision"] = True
-        kernel_config = TurboJointKernelConfig.from_config(OmegaConf.create(config) if as_dict_config else config)
-        assert kernel_config.kernel_type is TurboJointKernelType.FUSED_VOCAB
+        kernel_config = TrainingKernelConfig.from_config(OmegaConf.create(config) if as_dict_config else config)
+        assert kernel_config.kernel_type is TrainingKernelType.FUSED_VOCAB
         assert kernel_config.backend == "triton"
         assert kernel_config.mm_full_precision
         assert not kernel_config.use_high_precision_mm
@@ -135,6 +133,8 @@ class TestTurboJointKernelConfig:
             ({"type": "fused_vocab", "pruning": {"type": "backward", "range": 8}}, ConfigKeyError),
             ({"type": "fused_vocab", "pruning": 8}, ValidationError),
             ({"type": "fused_vocab", "pruning": {"type": "backward", "range_size": "wide"}}, ValidationError),
+            ({"type": "fused_vocab", "max_joint_rows": 200000}, ConfigKeyError),
+            ({"type": "flash", "backward_mode": "chunked"}, ConfigKeyError),
             # strict: an enabled pruning requires a valid type and range size
             ({"type": "fused_vocab", "pruning": {"type": "forward", "range_size": 8}}, ValueError),
             ({"type": "fused_vocab", "pruning": {"type": "backward"}}, ValueError),
@@ -154,7 +154,7 @@ class TestTurboJointKernelConfig:
     )
     def test_rejects_invalid_config(self, config, error):
         with pytest.raises(error):
-            TurboJointKernelConfig.from_config(config)
+            TrainingKernelConfig.from_config(config)
 
     @pytest.mark.unit
     @pytest.mark.parametrize(
@@ -180,7 +180,7 @@ class TestTurboJointKernelConfig:
         ],
     )
     def test_pruning_schedule(self, pruning_config, current_step, expected_range_size):
-        kernel_config = TurboJointKernelConfig.from_config({"type": "fused_vocab", "pruning": pruning_config})
+        kernel_config = TrainingKernelConfig.from_config({"type": "fused_vocab", "pruning": pruning_config})
         active_pruning = kernel_config.get_active_pruning(current_step)
         assert (None if active_pruning is None else active_pruning.range_size) == expected_range_size
         pruning_type = (pruning_config or {}).get("type")
@@ -190,7 +190,7 @@ class TestTurboJointKernelConfig:
 
     @pytest.mark.unit
     def test_scheduled_pruning_requires_step(self):
-        kernel_config = TurboJointKernelConfig.from_config(
+        kernel_config = TrainingKernelConfig.from_config(
             {"type": "fused_vocab", "pruning": {"type": "backward", "range_size": 2, "start_step": 5}}
         )
         with pytest.raises(ValueError, match="current step is required"):
@@ -198,26 +198,26 @@ class TestTurboJointKernelConfig:
 
     @pytest.mark.unit
     def test_missing_pruning_section_is_equivalent_to_null(self):
-        without_section = TurboJointKernelConfig.from_config(OmegaConf.create({"type": "fused_vocab"}))
-        with_null = TurboJointKernelConfig.from_config(OmegaConf.create({"type": "fused_vocab", "pruning": None}))
+        without_section = TrainingKernelConfig.from_config(OmegaConf.create({"type": "fused_vocab"}))
+        with_null = TrainingKernelConfig.from_config(OmegaConf.create({"type": "fused_vocab", "pruning": None}))
         assert without_section == with_null
         assert without_section.pruning is None
 
 
 class TestJointTurboKernel:
     @pytest.mark.unit
-    def test_turbo_kernel_is_disabled_by_default(self):
-        assert not _PlainJoint().uses_turbo_kernel
+    def test_training_kernel_is_disabled_by_default(self):
+        assert not _PlainJoint().uses_training_kernel
         joint = RNNTJoint(jointnet=_jointnet_config(), num_classes=NUM_CLASSES)
-        assert not joint.uses_turbo_kernel
-        assert joint.turbo_kernel_type is None
+        assert not joint.uses_training_kernel
+        assert joint.training_kernel_type is None
         # `type: null` disables the kernel, other parameters are ignored
         joint = RNNTJoint(
             jointnet=_jointnet_config(),
             num_classes=NUM_CLASSES,
-            turbo_kernel={"type": None, "backend": "cutile", "pruning": {"type": "two_pass", "range_size": 8}},
+            training_kernel={"type": None, "backend": "cutile", "pruning": {"type": "two_pass", "range_size": 8}},
         )
-        assert not joint.uses_turbo_kernel
+        assert not joint.uses_training_kernel
 
     @pytest.mark.unit
     def test_joints_declare_support_for_loss_logprobs(self):
@@ -230,7 +230,7 @@ class TestJointTurboKernel:
         ]:
             assert not joint.supports_loss_logprobs
             assert not joint.supports_consistency_loss
-            assert not joint.uses_turbo_kernel
+            assert not joint.uses_training_kernel
             encoder_outputs, decoder_outputs, source_lengths, targets, target_lengths = _joint_inputs()
             with pytest.raises(NotImplementedError, match="forward_for_loss"):
                 joint.forward_for_loss(encoder_outputs, decoder_outputs, source_lengths, targets, target_lengths)
@@ -239,8 +239,8 @@ class TestJointTurboKernel:
     def test_example_config_is_accepted(self):
         """Turbo kernel section of the example config must be consistent with the Joint"""
         joint_config = OmegaConf.load(EXAMPLE_CONFIG_PATH).model.joint
-        assert set(joint_config.turbo_kernel.keys()) == set(TurboJointKernelConfig.__dataclass_fields__.keys())
-        assert set(joint_config.turbo_kernel.pruning.keys()) == set(
+        assert set(joint_config.training_kernel.keys()) == set(FusedVocabKernelConfig.__dataclass_fields__)
+        assert set(joint_config.training_kernel.pruning.keys()) == set(
             TurboJointPruningConfig.__dataclass_fields__.keys()
         )
         joint = RNNTJoint(
@@ -248,16 +248,16 @@ class TestJointTurboKernel:
             num_classes=NUM_CLASSES,
             fuse_loss_wer=joint_config.fuse_loss_wer,
             fused_batch_size=joint_config.fused_batch_size,
-            turbo_kernel=joint_config.turbo_kernel,
+            training_kernel=joint_config.training_kernel,
         )
-        assert joint.turbo_kernel_type is TurboJointKernelType.FUSED_VOCAB
+        assert joint.training_kernel_type is TrainingKernelType.FUSED_VOCAB
         # pruning is disabled by default (`type: null`)
         joint.train()
         assert joint._get_active_pruning(current_step=10**6) is None
         # the range size of the example config is valid for each pruning type
         for pruning_type in TurboJointPruningType:
-            joint_config.turbo_kernel.pruning.type = pruning_type.value
-            assert TurboJointKernelConfig.from_config(joint_config.turbo_kernel).uses_pruning
+            joint_config.training_kernel.pruning.type = pruning_type.value
+            assert TrainingKernelConfig.from_config(joint_config.training_kernel).uses_pruning
 
     @pytest.mark.unit
     def test_joint_rejects_incompatible_configuration(self):
@@ -265,7 +265,7 @@ class TestJointTurboKernel:
             RNNTJoint(
                 jointnet=_jointnet_config(),
                 num_classes=NUM_CLASSES,
-                turbo_kernel=_turbo_kernel_config(),
+                training_kernel=_training_kernel_config(),
                 fuse_loss_wer=True,
                 fused_batch_size=1,
             )
@@ -274,30 +274,32 @@ class TestJointTurboKernel:
                 jointnet=_jointnet_config(),
                 num_classes=NUM_CLASSES,
                 num_extra_outputs=5,
-                turbo_kernel=_turbo_kernel_config(),
+                training_kernel=_training_kernel_config(),
             )
         with pytest.raises(ValueError, match="preserve_memory"):
             RNNTJoint(
                 jointnet=_jointnet_config(),
                 num_classes=NUM_CLASSES,
                 preserve_memory=True,
-                turbo_kernel=_turbo_kernel_config(),
+                training_kernel=_training_kernel_config(),
             )
         # cuTile backend is planned, but not implemented: rejected when the Joint is constructed
         with pytest.raises(NotImplementedError, match="cuTile"):
             RNNTJoint(
                 jointnet=_jointnet_config(),
                 num_classes=NUM_CLASSES,
-                turbo_kernel=_turbo_kernel_config(backend="cutile"),
+                training_kernel=_training_kernel_config(backend="cutile"),
             )
         with pytest.raises(ConfigKeyError):
             RNNTJoint(
                 jointnet=_jointnet_config(),
                 num_classes=NUM_CLASSES,
-                turbo_kernel={"type": "fused_vocab", "kwargs": {"backend": "triton"}},
+                training_kernel={"type": "fused_vocab", "kwargs": {"backend": "triton"}},
             )
 
-        joint = RNNTJoint(jointnet=_jointnet_config(), num_classes=NUM_CLASSES, turbo_kernel=_turbo_kernel_config())
+        joint = RNNTJoint(
+            jointnet=_jointnet_config(), num_classes=NUM_CLASSES, training_kernel=_training_kernel_config()
+        )
         with pytest.raises(ValueError, match="fuse_loss_wer"):
             joint.set_fuse_loss_wer(True)
 
@@ -311,7 +313,7 @@ class TestJointTurboKernel:
             return RNNTJoint(
                 jointnet=_jointnet_config(),
                 num_classes=NUM_CLASSES,
-                turbo_kernel=_turbo_kernel_config(pruning=pruning),
+                training_kernel=_training_kernel_config(pruning=pruning),
             )
 
         with caplog.at_level("WARNING"):
@@ -323,14 +325,14 @@ class TestJointTurboKernel:
         # NB: a record can be captured twice (by the handlers of the NeMo logger and of the root logger)
         messages = {id(record): record.getMessage() for record in caplog.records if "experimental" in record.msg}
         assert len(messages) == 1
-        assert f"turbo_kernel.pruning.type={pruning_type}" in next(iter(messages.values()))
+        assert f"training_kernel.pruning.type={pruning_type}" in next(iter(messages.values()))
 
     @pytest.mark.unit
     @pytest.mark.gpu
     @requires_triton_cuda
     @pytest.mark.parametrize("log_softmax", [None, True])
-    @pytest.mark.parametrize("use_turbo_kernel", [False, True])
-    def test_forward_for_loss_ignores_decoding_temperature(self, log_softmax: bool | None, use_turbo_kernel: bool):
+    @pytest.mark.parametrize("use_training_kernel", [False, True])
+    def test_forward_for_loss_ignores_decoding_temperature(self, log_softmax: bool | None, use_training_kernel: bool):
         """
         Regression: `forward_for_loss` rejected the temperature of the Joint, so the loss could not be computed
         after the temperature was changed by the decoding config (`change_decoding_strategy`).
@@ -341,7 +343,7 @@ class TestJointTurboKernel:
             jointnet=_jointnet_config(),
             num_classes=NUM_CLASSES,
             log_softmax=log_softmax,
-            turbo_kernel=_turbo_kernel_config() if use_turbo_kernel else None,
+            training_kernel=_training_kernel_config() if use_training_kernel else None,
         ).to("cuda")
         encoder_outputs, decoder_outputs, source_lengths, targets, target_lengths = _joint_inputs(device="cuda")
         # reference: from the raw logits (GPU, `log_softmax=None`)
@@ -372,7 +374,7 @@ class TestJointTurboKernel:
         joint = RNNTJoint(
             jointnet=_jointnet_config(dropout=0.25),
             num_classes=NUM_CLASSES,
-            turbo_kernel={
+            training_kernel={
                 "type": "fused_vocab",
                 "backend": None,
                 "mm_full_precision": True,
@@ -447,10 +449,10 @@ class TestJointTurboKernel:
             return torch.zeros(2, 4, 4), torch.zeros(2, 4, 4)
 
         monkeypatch.setattr(f"{RNNT_MODULE}.rnnt_joint_fused_vocab", fake_fused_vocab)
-        config = OmegaConf.create(_turbo_kernel_config(pruning=pruning_config))
-        joint = RNNTJoint(jointnet=_jointnet_config(), num_classes=NUM_CLASSES, turbo_kernel=config)
+        config = OmegaConf.create(_training_kernel_config(pruning=pruning_config))
+        joint = RNNTJoint(jointnet=_jointnet_config(), num_classes=NUM_CLASSES, training_kernel=config)
         # the schedule depends only on the step supplied by the model: a restored module behaves identically
-        restored = RNNTJoint(jointnet=_jointnet_config(), num_classes=NUM_CLASSES, turbo_kernel=config)
+        restored = RNNTJoint(jointnet=_jointnet_config(), num_classes=NUM_CLASSES, training_kernel=config)
         restored.load_state_dict(joint.state_dict())
         for module in [joint, restored]:
             module.train(training)
@@ -464,7 +466,7 @@ class TestJointTurboKernel:
         joint = RNNTJoint(
             jointnet=_jointnet_config(),
             num_classes=NUM_CLASSES,
-            turbo_kernel=_turbo_kernel_config(pruning={"type": pruning_type, "range_size": 2, "start_step": 5}),
+            training_kernel=_training_kernel_config(pruning={"type": pruning_type, "range_size": 2, "start_step": 5}),
         )
         joint.train()
         with pytest.raises(ValueError, match="current step is required"):
@@ -476,7 +478,7 @@ class TestJointTurboKernel:
             joint = RNNTJoint(
                 jointnet=_jointnet_config(),
                 num_classes=NUM_CLASSES,
-                turbo_kernel=_turbo_kernel_config(backend=backend),
+                training_kernel=_training_kernel_config(backend=backend),
             )
             assert joint.supports_consistency_loss
 
@@ -484,7 +486,7 @@ class TestJointTurboKernel:
     @pytest.mark.gpu
     @requires_triton_cuda
     @pytest.mark.parametrize("masking_prob", [-1.0, 0.5])
-    def test_turbo_kernel_does_not_change_standard_forward(self, masking_prob: float):
+    def test_training_kernel_does_not_change_standard_forward(self, masking_prob: float):
         """Decoding uses the standard forward: the turbo kernel must not affect it"""
         device = torch.device("cuda")
         standard_joint = RNNTJoint(
@@ -494,7 +496,7 @@ class TestJointTurboKernel:
             jointnet=_jointnet_config(dropout=0.2),
             num_classes=NUM_CLASSES,
             masking_prob=masking_prob,
-            turbo_kernel=_turbo_kernel_config(),
+            training_kernel=_training_kernel_config(),
         )
         turbo_joint.load_state_dict(standard_joint.state_dict(), strict=True)
         encoder_outputs, decoder_outputs, _, _, _ = _joint_inputs(device=device)
@@ -520,7 +522,7 @@ class TestJointTurboKernel:
         torch.manual_seed(42)
         device = torch.device("cuda")
         joint = RNNTJoint(
-            jointnet=_jointnet_config(), num_classes=NUM_CLASSES, turbo_kernel=_turbo_kernel_config()
+            jointnet=_jointnet_config(), num_classes=NUM_CLASSES, training_kernel=_training_kernel_config()
         ).to(device)
         batch_size = 4 if compute_consistency else 2
         encoder_outputs, decoder_outputs, source_lengths, targets, target_lengths = _joint_inputs(
@@ -602,7 +604,7 @@ class TestJointTurboKernel:
             joint = RNNTJoint(
                 jointnet=_jointnet_config(),
                 num_classes=NUM_CLASSES,
-                turbo_kernel=_turbo_kernel_config(**backward_mode_config),
+                training_kernel=_training_kernel_config(**backward_mode_config),
             ).to(device)
             state_dict = state_dict or joint.state_dict()
             joint.load_state_dict(state_dict, strict=True)
@@ -630,7 +632,7 @@ class TestJointTurboKernel:
             num_classes=NUM_CLASSES,
             log_softmax=False,
             masking_prob=masking_prob,
-            turbo_kernel=_turbo_kernel_config(),
+            training_kernel=_training_kernel_config(),
         ).to(device)
         turbo_joint.load_state_dict(standard_joint.state_dict(), strict=True)
 
@@ -686,12 +688,12 @@ class TestJointTurboKernel:
         device = torch.device("cuda")
         loss = RNNTLoss(num_classes=NUM_CLASSES, reduction="mean_volume", loss_name="turbo_rnnt")
         dense_joint = RNNTJoint(
-            jointnet=_jointnet_config(), num_classes=NUM_CLASSES, turbo_kernel=_turbo_kernel_config()
+            jointnet=_jointnet_config(), num_classes=NUM_CLASSES, training_kernel=_training_kernel_config()
         ).to(device)
         pruned_joint = RNNTJoint(
             jointnet=_jointnet_config(),
             num_classes=NUM_CLASSES,
-            turbo_kernel=_turbo_kernel_config(pruning={"type": "backward", "range_size": 1, "start_step": 5}),
+            training_kernel=_training_kernel_config(pruning={"type": "backward", "range_size": 1, "start_step": 5}),
         ).to(device)
         pruned_joint.load_state_dict(dense_joint.state_dict(), strict=True)
         encoder_outputs, decoder_outputs, source_lengths, targets, target_lengths = _joint_inputs(device=device)
@@ -735,7 +737,7 @@ class TestJointTurboKernel:
         joint = RNNTJoint(
             jointnet=_jointnet_config(),
             num_classes=NUM_CLASSES,
-            turbo_kernel=_turbo_kernel_config(pruning={"type": "two_pass", "range_size": 4}),
+            training_kernel=_training_kernel_config(pruning={"type": "two_pass", "range_size": 4}),
         )
         joint.train()
         loss_inputs = joint.forward_for_loss(*_joint_inputs())
@@ -748,11 +750,11 @@ class TestJointTurboKernel:
     @pytest.mark.unit
     @pytest.mark.gpu
     @requires_triton_cuda
-    @pytest.mark.parametrize("use_turbo_kernel", [False, True])
+    @pytest.mark.parametrize("use_training_kernel", [False, True])
     @pytest.mark.parametrize("symmetrical", [True, False])
     @pytest.mark.parametrize("reduction", ["mean", "mean_volume"])
     def test_joint_with_consistency_matches_separate_losses(
-        self, use_turbo_kernel: bool, symmetrical: bool, reduction: str
+        self, use_training_kernel: bool, symmetrical: bool, reduction: str
     ):
         """`forward_for_loss` (single gradient buffer) must match the reference: full logits + two separate losses"""
         torch.manual_seed(42)
@@ -765,7 +767,7 @@ class TestJointTurboKernel:
             jointnet=_jointnet_config(),
             num_classes=NUM_CLASSES,
             log_softmax=False,
-            turbo_kernel=_turbo_kernel_config() if use_turbo_kernel else None,
+            training_kernel=_training_kernel_config() if use_training_kernel else None,
         ).to(device)
         fused_joint.load_state_dict(reference_joint.state_dict(), strict=True)
 
@@ -820,7 +822,7 @@ class TestJointTurboKernel:
         )
         (fused_rnnt_loss_value + consistency_weight * fused_consistency_value).backward()
 
-        tolerance = dict(atol=2e-4, rtol=2e-4) if use_turbo_kernel else dict(atol=1e-5, rtol=1e-5)
+        tolerance = dict(atol=2e-4, rtol=2e-4) if use_training_kernel else dict(atol=1e-5, rtol=1e-5)
         assert torch.allclose(fused_rnnt_loss_value, reference_rnnt_loss_value, **tolerance)
         assert torch.allclose(fused_consistency_value, reference_consistency_value, **tolerance)
         assert torch.allclose(fused_encoder.grad, reference_encoder.grad, **tolerance)

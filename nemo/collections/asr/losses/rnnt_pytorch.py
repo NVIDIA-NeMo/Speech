@@ -183,7 +183,7 @@ class TDTLossPytorch(Loss):
         B, T, U, _ = acts.shape
 
         log_alpha = torch.zeros(B, T, U)
-        log_alpha = log_alpha.cuda()
+        log_alpha = log_alpha.to(device=acts.device)
         for b in range(B):
             for t in range(T):
                 for u in range(U):
@@ -228,7 +228,7 @@ class TDTLossPytorch(Loss):
 
         log_probs = []
         for b in range(B):
-            tt = torch.Tensor([-1000.0]).cuda()[0]
+            tt = torch.tensor(-1000.0, device=acts.device)
 
             # need to loop over all possible ways that blank with different durations contributes to the final loss.
             for n, l in enumerate(self.durations):

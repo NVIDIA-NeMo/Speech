@@ -169,6 +169,17 @@ class TestTTSTokenizers:
 
     @pytest.mark.run_only_on('CPU')
     @pytest.mark.unit
+    def test_vietnamese_chars_tokenizer_custom_text_preprocessing_func(self):
+        # The constructor exposes `text_preprocessing_func`, so a custom one must be used instead of the
+        # module default. `lambda _: "xin"` replaces any input with a fixed in-vocabulary word, which only
+        # reaches the token stream if the tokenizer actually forwards the argument.
+        tokenizer = VietnameseCharsTokenizer(text_preprocessing_func=lambda _: "xin")
+        chars, _ = self._parse_text(tokenizer, "WORLD")
+
+        assert chars == "xin"
+
+    @pytest.mark.run_only_on('CPU')
+    @pytest.mark.unit
     def test_french_chars_tokenizer(self):
         input_text = "Bon après-midi !"
         expected_output = "bon après-midi !"

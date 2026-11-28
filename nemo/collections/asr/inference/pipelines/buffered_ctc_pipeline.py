@@ -284,16 +284,25 @@ class BufferedCTCPipeline(BasePipeline):
         return log_probs
 
     def run_greedy_decoder(
-        self, state: CTCStreamingState, request: Frame, buffer_log_probs: Tensor, start: int, end: int
+        self,
+        state: CTCStreamingState,
+        request: Frame,
+        buffer_log_probs: Tensor | None,
+        start: int,
+        end: int,
+        labels: list[int] | None = None,
+        confidences: list[float] | None = None,
     ) -> bool:
         """
         Run Greedy decoder, update state and trigger EOU detection.
         Args:
             state: (CTCStreamingState) Current state for the particular stream.
             request: (Frame) Current request for the particular stream.
-            buffer_log_probs: (Tensor) Log probabilities.
+            buffer_log_probs: (Tensor | None) Log probabilities, may be None when `labels` and `confidences` are given.
             start: (int) Start index of the log probabilities.
             end: (int) End index of the log probabilities.
+            labels: (list[int] | None) Precomputed greedy labels of the stream.
+            confidences: (list[float] | None) Precomputed confidences of the stream.
         Returns:
             (bool) Whether EOU is detected.
         """
@@ -308,6 +317,8 @@ class BufferedCTCPipeline(BasePipeline):
             state_end_idx=state.decoder_end_idx,
             stop_history_eou=state.options.stop_history_eou,
             compute_confidence=True,
+            labels=labels,
+            confidences=confidences,
         )
 
         state.update_state(clipped_output, eou_detected)
@@ -327,6 +338,10 @@ class BufferedCTCPipeline(BasePipeline):
         postponed_requests = [(ridx, request.stream_id) for ridx, request in enumerate(requests)]
         next_postponed_requests = []
 
+        # Labels and confidences of the whole batch come to the host in one copy, not one [T, V] matrix per stream
+        all_labels, all_confidences = self.greedy_ctc_decoder.batched_labels_and_confidences(log_probs)
+        num_frames = log_probs.shape[1]
+
         while len(postponed_requests) > 0:
 
             ready_state_ids = set()
@@ -339,9 +354,16 @@ class BufferedCTCPipeline(BasePipeline):
 
                 request = requests[ridx]
                 state = self.get_state(stream_id)
-                lp = log_probs[ridx].cpu()
-                start, end = self.get_cut_off_range(lp.shape[0], request.is_last)
-                eou_detected = self.run_greedy_decoder(state, request, lp, start, end)
+                start, end = self.get_cut_off_range(num_frames, request.is_last)
+                eou_detected = self.run_greedy_decoder(
+                    state,
+                    request,
+                    None,
+                    start,
+                    end,
+                    labels=all_labels[ridx],
+                    confidences=all_confidences[ridx] if all_confidences is not None else None,
+                )
 
                 if eou_detected:
                     self.bpe_decoder.decode_bpe_tokens(state)

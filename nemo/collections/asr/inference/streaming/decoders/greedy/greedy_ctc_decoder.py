@@ -48,22 +48,54 @@ class CTCGreedyDecoder(GreedyDecoder):
         labels = log_probs.argmax(dim=-1).cpu()  # T
         return labels.tolist()
 
-    def __call__(self, log_probs: torch.Tensor, compute_confidence: bool = True, previous: int = None) -> dict:
+    def batched_labels_and_confidences(
+        self, log_probs: torch.Tensor, compute_confidence: bool = True
+    ) -> tuple[list[list[int]], list[list[float]] | None]:
+        """
+        Greedy labels and confidences of a whole batch, computed where the log probabilities are
+        and moved to the host with one copy, instead of copying every stream's [T, V] matrix.
+        Args:
+            log_probs (torch.Tensor): log probabilities of shape (B, T, V)
+            compute_confidence (bool): compute confidence or not
+        Returns:
+            tuple: labels (B lists of T ints), confidences (B lists of T floats) or None
+        """
+        if log_probs.dim() != 3:
+            raise ValueError("log_probs must be 3D tensor")
+        labels = log_probs.argmax(dim=-1)  # B x T
+        if compute_confidence and self.conf_func is not None:
+            confidences = self.conf_func(log_probs, v=log_probs.shape[2]).float()  # B x T
+            labels, confidences = labels.cpu(), confidences.cpu()
+            return labels.tolist(), confidences.tolist()
+        return labels.cpu().tolist(), None
+
+    def __call__(
+        self,
+        log_probs: torch.Tensor | None,
+        compute_confidence: bool = True,
+        previous: int = None,
+        labels: list[int] | None = None,
+        confidences: list[float] | None = None,
+    ) -> dict:
         """
         Greedy decode the log probabilities
         Args:
-            log_probs (torch.Tensor): log probabilities
+            log_probs (torch.Tensor | None): log probabilities, may be None when `labels` is given and
+                confidences are given or not needed
             compute_confidence (bool): compute confidence or not
+            previous (int): label before the first timestep
+            labels (list[int] | None): precomputed greedy labels of the stream, skips the argmax
+            confidences (list[float] | None): precomputed confidences of the stream, skips the computation
         Returns:
             dict: output dictionary containing tokens, timesteps, and confidences
         """
 
         compute_confidence = compute_confidence and self.conf_func is not None
 
-        if log_probs.dim() != 2:
+        if log_probs is not None and log_probs.dim() != 2:
             raise ValueError("log_probs must be 2D tensor")
 
-        if compute_confidence:
+        if compute_confidence and confidences is None:
             # Add batch dimension
             log_probs = log_probs.unsqueeze(0)  # 1 x T x N
             # Compute confidences
@@ -74,7 +106,8 @@ class CTCGreedyDecoder(GreedyDecoder):
             # Remove batch dimension
             log_probs = log_probs.squeeze(0)  # T x N
 
-        labels = self.get_labels(log_probs)  # T
+        if labels is None:
+            labels = self.get_labels(log_probs)  # T
         output = {"tokens": [], "timesteps": [], "confidences": []}
         previous = self.blank_id if previous is None else previous
         for i, p in enumerate(labels):
@@ -108,6 +141,15 @@ class ClippedCTCGreedyDecoder:
         self.endpointer = endpointer
         self.tokens_per_frame = tokens_per_frame
 
+    def batched_labels_and_confidences(
+        self, log_probs: torch.Tensor, compute_confidence: bool = True
+    ) -> tuple[list[list[int]], list[list[float]] | None]:
+        """
+        Greedy labels and confidences of a whole batch of log probabilities of shape (B, T, V), with one
+        device-to-host copy. Pass row `i` of each result as `labels` and `confidences` when decoding stream `i`.
+        """
+        return self.greedy_decoder.batched_labels_and_confidences(log_probs, compute_confidence)
+
     def __call__(
         self,
         log_probs: torch.Tensor,
@@ -120,11 +162,16 @@ class ClippedCTCGreedyDecoder:
         state_end_idx: int = 0,
         stop_history_eou: int = None,
         compute_confidence: bool = True,
+        labels: list[int] | None = None,
+        confidences: list[float] | None = None,
     ) -> tuple[dict, dict, bool, int, int]:
         """
         Decode the log probabilities within the clip range (clip_start, clip_end)
         Args:
-            log_probs (torch.Tensor): log probabilities
+            log_probs (torch.Tensor | None): log probabilities, may be None when `labels` (and `confidences`
+                if confidence is computed) are given
+            labels (list[int] | None): precomputed greedy labels of the stream
+            confidences (list[float] | None): precomputed confidences of the stream
             clip_start (int): start index of the clip
             clip_end (int): end index of the clip
             is_last (bool): is the last frame or not
@@ -140,7 +187,7 @@ class ClippedCTCGreedyDecoder:
         """
 
         is_eou = is_last
-        eou_detected_at = len(log_probs)
+        eou_detected_at = len(labels) if labels is not None else len(log_probs)
         # Initialize state tracking variables from input parameters
         start_idx, end_idx = state_start_idx, state_end_idx
         # Update indices for next processing step
@@ -151,16 +198,23 @@ class ClippedCTCGreedyDecoder:
         if is_start or end_idx <= clip_start:
             start_idx, end_idx = clip_start, clip_end
 
-        all_output = self.greedy_decoder(log_probs, compute_confidence=compute_confidence)
+        all_output = self.greedy_decoder(
+            log_probs, compute_confidence=compute_confidence, labels=labels, confidences=confidences
+        )
 
         clipped_output = {"tokens": [], "timesteps": [], "confidences": [], "last_token": None, "last_token_idx": None}
         tail_output = {"tokens": []}
 
         # check if EOU is detected or is the last frame
         if not is_eou and self.endpointer is not None:
-            is_eou, eou_detected_at = self.endpointer.detect_eou(
-                log_probs, pivot_point=start_idx, search_start_point=clip_start, stop_history_eou=stop_history_eou
-            )
+            if labels is not None:
+                is_eou, eou_detected_at = self.endpointer.detect_eou_given_emissions(
+                    labels, pivot_point=start_idx, search_start_point=clip_start, stop_history_eou=stop_history_eou
+                )
+            else:
+                is_eou, eou_detected_at = self.endpointer.detect_eou(
+                    log_probs, pivot_point=start_idx, search_start_point=clip_start, stop_history_eou=stop_history_eou
+                )
 
         # if EOU is detected, and it is after the clip end, update the end index to the EOU
         if is_eou and eou_detected_at > end_idx:

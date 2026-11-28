@@ -1615,6 +1615,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
     ):
         """
         Update the self_attention_model which changes the positional encoding and attention layers.
+        The new modules inherit the train/eval mode of the encoder or their enclosing layer.
 
         Args:
             self_attention_model (str): type of the attention layer and positional encoding
@@ -1706,6 +1707,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             )
         elif self_attention_model == "rope":
             self.dropout_pre_encoder = torch.nn.Dropout(getattr(self._cfg, 'dropout_pre_encoder', 0.1))
+            self.dropout_pre_encoder.train(self.training)
             new_pos_enc = RotaryPositionalEncoding(
                 d_k=self._cfg.d_model // self._cfg.n_heads,
                 rotary_fraction=rotary_fraction,
@@ -1741,8 +1743,9 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                     new_attn = new_attn.to(device=device)
                 new_attn.load_state_dict(m.self_attn.state_dict(), strict=False)
                 del m.self_attn
-                m.self_attn = new_attn
+                m.self_attn = new_attn.train(m.training)
                 m.self_attention_model = self_attention_model
+        self.pos_enc.train(self.training)
         # later context-only changes rebuild from the block that is active now
         self._self_attn_block = self_attn
 

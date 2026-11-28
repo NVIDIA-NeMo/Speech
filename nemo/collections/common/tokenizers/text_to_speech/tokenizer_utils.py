@@ -30,9 +30,11 @@ __all__ = [
     "any_locale_word_tokenize",
     "english_word_tokenize",
     "LATIN_CHARS_ALL",
+    "LATIN_CHARS_EXTENDED",
     "INDIC_CHARS_ALL",
     "KOREAN_CHARS",
     "WORD_CHARS_ALL",
+    "WORD_CHARS_EXTENDED",
     "normalize_unicode_text",
     "japanese_text_preprocessing",
 ]
@@ -57,6 +59,9 @@ SYNOGLYPH2ASCII = {g: asc for asc, glyphs in _synoglyphs.items() for g in glyphs
 LATIN_ALPHABET_BASIC = "A-Za-z"
 ACCENTED_CHARS = "À-ÖØ-öø-ÿ"
 LATIN_CHARS_ALL = f"{LATIN_ALPHABET_BASIC}{ACCENTED_CHARS}"
+# Opt-in version 2 adds Latin Extended-A/B and Latin Extended Additional. Keeping LATIN_CHARS_ALL unchanged preserves
+# word boundaries and generated IPA-tokenizer vocabularies for existing checkpoints.
+LATIN_CHARS_EXTENDED = f"{LATIN_CHARS_ALL}Ā-ɏḀ-ỿ"
 
 # Indic characters based on https://www.unicode.org/charts/
 # Hindi, Marathi, Nepali, Sanskrit https://en.wikipedia.org/wiki/Devanagari_(Unicode_block)
@@ -77,13 +82,22 @@ INDIC_CHARS_ALL = f"{DEVANAGARI_CHARS}{BENGALI_CHARS}{TAMIL_CHARS}{TELUGU_CHARS}
 KOREAN_CHARS = r'\uAC00-\uD7A3\u1100-\u11FF\u3130-\u318F'
 
 WORD_CHARS_ALL = f"{LATIN_CHARS_ALL}{INDIC_CHARS_ALL}{KOREAN_CHARS}"
+WORD_CHARS_EXTENDED = f"{LATIN_CHARS_EXTENDED}{INDIC_CHARS_ALL}{KOREAN_CHARS}"
 
 _WORDS_RE_EN = re.compile(
     fr"([{LATIN_ALPHABET_BASIC}]+(?:[{LATIN_ALPHABET_BASIC}\-']*[{LATIN_ALPHABET_BASIC}]+)*)"
     fr"|(\|[^|]*\|)|([^{LATIN_ALPHABET_BASIC}|]+)"
 )
+_WORDS_RE_EN_EXTENDED = re.compile(
+    fr"([{LATIN_CHARS_EXTENDED}]+(?:[{LATIN_CHARS_EXTENDED}\-']*[{LATIN_CHARS_EXTENDED}]+)*)"
+    fr"|(\|[^|]*\|)|([^{LATIN_CHARS_EXTENDED}|]+)"
+)
 _WORDS_RE_ANY_LOCALE = re.compile(
     fr"([{WORD_CHARS_ALL}]+(?:[{WORD_CHARS_ALL}\-']*[{WORD_CHARS_ALL}]+)*)|(\|[^|]*\|)|([^{WORD_CHARS_ALL}|]+)"
+)
+_WORDS_RE_ANY_LOCALE_EXTENDED = re.compile(
+    fr"([{WORD_CHARS_EXTENDED}]+(?:[{WORD_CHARS_EXTENDED}\-']*[{WORD_CHARS_EXTENDED}]+)*)"
+    fr"|(\|[^|]*\|)|([^{WORD_CHARS_EXTENDED}|]+)"
 )
 
 
@@ -208,15 +222,28 @@ def _word_tokenize(words: List[Tuple[str, str, str]], is_lower: bool = False) ->
     return result
 
 
-def english_word_tokenize(text: str) -> List[Tuple[List[str], bool]]:
-    """Tokenize English text into word spans and unchanged spans."""
-    words = _WORDS_RE_EN.findall(text)
+def english_word_tokenize(text: str, latin_charset_version: int = 1) -> List[Tuple[List[str], bool]]:
+    """Tokenize English text, optionally recognizing extended Latin letters."""
+    if type(latin_charset_version) is not int or latin_charset_version not in (1, 2):
+        raise ValueError(f"Unsupported latin_charset_version={latin_charset_version!r}. Use 1 (legacy) or 2.")
+    words = (_WORDS_RE_EN if latin_charset_version == 1 else _WORDS_RE_EN_EXTENDED).findall(text)
     return _word_tokenize(words, is_lower=True)
 
 
-def any_locale_word_tokenize(text: str) -> List[Tuple[List[str], bool]]:
-    """Tokenize locale-agnostic text into word spans and unchanged spans."""
-    words = _WORDS_RE_ANY_LOCALE.findall(text)
+def any_locale_word_tokenize(text: str, latin_charset_version: int = 1) -> List[Tuple[List[str], bool]]:
+    """Tokenize locale-agnostic text, optionally recognizing extended Latin letters.
+
+    Version 1 preserves the historical Latin-1 word-character range. Version 2 additionally recognizes Latin
+    Extended-A/B and Latin Extended Additional. The explicit version keeps checkpoint tokenization reproducible.
+    """
+    if type(latin_charset_version) is not int:
+        raise ValueError(f"Unsupported latin_charset_version={latin_charset_version!r}. Use 1 (legacy) or 2.")
+    if latin_charset_version == 1:
+        words = _WORDS_RE_ANY_LOCALE.findall(text)
+    elif latin_charset_version == 2:
+        words = _WORDS_RE_ANY_LOCALE_EXTENDED.findall(text)
+    else:
+        raise ValueError(f"Unsupported latin_charset_version={latin_charset_version!r}. Use 1 (legacy) or 2.")
     return _word_tokenize(words)
 
 

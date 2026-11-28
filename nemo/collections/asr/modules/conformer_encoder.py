@@ -1706,6 +1706,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
             )
         elif self_attention_model == "rope":
             self.dropout_pre_encoder = torch.nn.Dropout(getattr(self._cfg, 'dropout_pre_encoder', 0.1))
+            self.dropout_pre_encoder.train(self.training)
             new_pos_enc = RotaryPositionalEncoding(
                 d_k=self._cfg.d_model // self._cfg.n_heads,
                 rotary_fraction=rotary_fraction,
@@ -1715,6 +1716,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         else:
             raise ValueError(f"Not valid self_attention_model: '{self_attention_model}'!")
 
+        new_pos_enc.train(self.training)
         if device is not None:
             new_pos_enc = new_pos_enc.to(device=device)
         del self.pos_enc
@@ -1737,6 +1739,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                     use_pytorch_sdpa_backends=self.use_pytorch_sdpa_backends,
                     pos_enc=new_pos_enc,
                 )
+                new_attn.train(m.training)
                 if device is not None:
                     new_attn = new_attn.to(device=device)
                 new_attn.load_state_dict(m.self_attn.state_dict(), strict=False)

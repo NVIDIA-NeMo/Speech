@@ -16,10 +16,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from math import prod
 from typing import Any
 
 # Each audio codebook appends BOS, EOS, context, mask, and reserved tokens.
 NUM_SPECIAL_AUDIO_TOKENS: int = 8
+
+# Stage 0 uses this for prefill/non-audio rows. Every sampled codec token and
+# audio control token is non-negative.
+NO_AUDIO_FRAME: int = -1
+
 
 # Offsets within the trailing special-token block.
 SPECIAL_AUDIO_BOS: int = 0
@@ -42,6 +48,15 @@ class EasyMagpieOmniArch:
     num_audio_codebooks: int = 8
     codebook_size: int = 1024
     frame_stacking_factor: int = 2
+
+    # v1 predicts each frame with an intra-frame local transformer. v2 uses a
+    # sequence-cached Nemotron-H predictor that must run on every backbone row.
+    acoustic_predictor_type: str = "local_transformer"
+
+    # v2 embeds codec indices by dequantizing their FSQ latents and applying one
+    # learned projection. v1 keeps one learned embedding table per channel.
+    use_codec_latent_audio_embedding: bool = False
+    codec_num_levels_per_group: list[int] = field(default_factory=list)
 
     phoneme_stacking_factor: int = 1
     phoneme_vocab_size: int = 2051
@@ -113,9 +128,6 @@ class EasyMagpieOmniArch:
             "num_audio_codebooks",
             "codebook_size",
             "frame_stacking_factor",
-            "local_transformer_n_layers",
-            "local_transformer_n_heads",
-            "local_transformer_hidden_dim",
             "codec_input_sample_rate",
             "codec_samples_per_frame",
             "reference_speaker_encoder_n_layers",
@@ -128,19 +140,43 @@ class EasyMagpieOmniArch:
             if getattr(self, name) <= 0:
                 raise ValueError(f"{name} must be positive, got {getattr(self, name)}")
 
+        if self.acoustic_predictor_type not in {"local_transformer", "acoustic_codes_predictor"}:
+            raise ValueError(
+                "acoustic_predictor_type must be 'local_transformer' or 'acoustic_codes_predictor', got "
+                f"{self.acoustic_predictor_type!r}"
+            )
+        if self.acoustic_predictor_type == "local_transformer":
+            for name in (
+                "local_transformer_n_layers",
+                "local_transformer_n_heads",
+                "local_transformer_hidden_dim",
+            ):
+                if getattr(self, name) <= 0:
+                    raise ValueError(f"{name} must be positive, got {getattr(self, name)}")
+            if self.local_transformer_hidden_dim % self.local_transformer_n_heads != 0:
+                raise ValueError(
+                    "local_transformer_hidden_dim must be divisible by local_transformer_n_heads for the current "
+                    "attention implementation; extend EasyMagpieLocalTransformerPredictor to support other head "
+                    "layouts. Got "
+                    f"{self.local_transformer_hidden_dim} and {self.local_transformer_n_heads}."
+                )
+        elif self.acoustic_predictor_type == "acoustic_codes_predictor":
+            if not self.use_codec_latent_audio_embedding:
+                raise ValueError("v2 serving currently requires use_codec_latent_audio_embedding=True")
+            if not self.codec_num_levels_per_group or any(level <= 1 for level in self.codec_num_levels_per_group):
+                raise ValueError("codec_num_levels_per_group must contain FSQ levels greater than one")
+            if prod(self.codec_num_levels_per_group) != self.codebook_size:
+                raise ValueError(
+                    "codec_num_levels_per_group must multiply to codebook_size; got "
+                    f"{prod(self.codec_num_levels_per_group)} and {self.codebook_size}"
+                )
+
         if self.hidden_dim != self.embedding_dim:
             raise ValueError(
                 "hidden_dim must equal embedding_dim because the vLLM backbone currently consumes text/audio "
                 "embeddings without an input projection. Add the corresponding projection to support unequal widths; "
                 f"got hidden_dim={self.hidden_dim}, embedding_dim={self.embedding_dim}."
             )
-        if self.local_transformer_hidden_dim % self.local_transformer_n_heads != 0:
-            raise ValueError(
-                "local_transformer_hidden_dim must be divisible by local_transformer_n_heads for the current "
-                "attention implementation; extend EasyMagpieCodePredictor to support other head layouts. Got "
-                f"{self.local_transformer_hidden_dim} and {self.local_transformer_n_heads}."
-            )
-
         phonemes_enabled = self.phoneme_vocab_size > 0 and self.phoneme_stacking_factor > 0
         if phonemes_enabled != (self.phoneme_vocab_size > 0 or self.phoneme_stacking_factor > 0):
             raise ValueError(
@@ -401,6 +437,9 @@ class EasyMagpieOmniArch:
             "num_audio_codebooks",
             "codebook_size",
             "frame_stacking_factor",
+            "acoustic_predictor_type",
+            "use_codec_latent_audio_embedding",
+            "codec_num_levels_per_group",
             "phoneme_stacking_factor",
             "phoneme_vocab_size",
             "text_eos_id",

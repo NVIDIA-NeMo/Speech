@@ -49,7 +49,7 @@ EASYMAGPIE_PIPELINE = PipelineConfig(
             # requests can pace their next text chunk against the acoustic frames
             # already produced. This is safe for the plain /v1/audio/speech path:
             # in two-stage (latent) mode stage-0 codes are emitted under the
-            # ``audio_codes``/``codes`` keys (see EasyMagpieTTS.make_omni_output),
+            # ``codes.audio`` key (see EasyMagpieTTS.make_omni_output),
             # which the HTTP handler's ``_extract_audio_output`` does not treat as
             # audio (it only keys on ``audio``/``model_outputs``), so those deltas
             # are skipped and only the stage-1 waveform is returned.

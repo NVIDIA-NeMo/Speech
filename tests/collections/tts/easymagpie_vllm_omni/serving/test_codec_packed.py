@@ -16,7 +16,13 @@
 import pytest
 import torch
 from easymagpie_vllm_omni.codec.config import EasyMagpieCodecConfig
-from easymagpie_vllm_omni.codec.packed import CODEC_STATE_ELEMENTS, CodecStateLayer, PackedEasyMagpieCodec
+from easymagpie_vllm_omni.codec.packed import (
+    CODEC_STATE_ELEMENTS,
+    CodecStateLayer,
+    PackedCausalConv1d,
+    PackedEasyMagpieCodec,
+    PackedFiniteScalarDequantizer,
+)
 from vllm.config import VllmConfig, set_current_vllm_config
 from vllm.forward_context import set_forward_context
 from vllm.v1.attention.backends.mamba1_attn import Mamba1AttentionMetadata
@@ -48,15 +54,10 @@ def metadata(frames: int, *, has_initial: bool, device: torch.device | str = "cp
         num_reqs=1,
         has_initial_states_p=torch.tensor([has_initial], device=device),
         query_start_loc_p=torch.tensor([0, frames], dtype=torch.int32, device=device),
-        num_computed_tokens_p=None,
         state_indices_tensor_p=torch.tensor([0], dtype=torch.int32, device=device),
         state_indices_tensor_d=torch.empty((0, 1), dtype=torch.int32, device=device),
         query_start_loc_d=None,
         num_accepted_tokens=None,
-        block_idx_last_scheduled_token=None,
-        block_idx_first_scheduled_token_p=None,
-        block_idx_last_computed_token=None,
-        block_idx_last_scheduled_token_prev_step=None,
         seq_lens=torch.tensor([frames], dtype=torch.int32, device=device),
     )
     result.codec_max_query_len = frames
@@ -78,15 +79,10 @@ def decode_metadata(
         num_reqs=num_decodes,
         has_initial_states_p=None,
         query_start_loc_p=None,
-        num_computed_tokens_p=None,
         state_indices_tensor_p=None,
         state_indices_tensor_d=torch.tensor(pages, dtype=torch.int32, device=device).unsqueeze(1),
         query_start_loc_d=None,
         num_accepted_tokens=None,
-        block_idx_last_scheduled_token=None,
-        block_idx_first_scheduled_token_p=None,
-        block_idx_last_computed_token=None,
-        block_idx_last_scheduled_token_prev_step=None,
         seq_lens=torch.full((num_decodes,), 2, dtype=torch.int32, device=device),
     )
     result.codec_uniform = True
@@ -102,19 +98,30 @@ def mixed_metadata(prefill_frames: int, *, device: torch.device | str = "cpu") -
         num_reqs=2,
         has_initial_states_p=torch.tensor([False], device=device),
         query_start_loc_p=torch.tensor([0, prefill_frames], dtype=torch.int32, device=device),
-        num_computed_tokens_p=None,
         state_indices_tensor_p=torch.tensor([1], dtype=torch.int32, device=device),
         state_indices_tensor_d=torch.tensor([[0]], dtype=torch.int32, device=device),
         query_start_loc_d=None,
         num_accepted_tokens=None,
-        block_idx_last_scheduled_token=None,
-        block_idx_first_scheduled_token_p=None,
-        block_idx_last_computed_token=None,
-        block_idx_last_scheduled_token_prev_step=None,
         seq_lens=torch.tensor([2, prefill_frames], dtype=torch.int32, device=device),
     )
     result.codec_max_query_len = prefill_frames
     return result
+
+
+@pytest.mark.parametrize("level_sizes", [[4, 4, 4, 4, 4, 4], [3, 4, 7]])
+def test_packed_fsq_table_matches_all_codes(level_sizes):
+    import math
+
+    size = math.prod(level_sizes)
+    config = EasyMagpieCodecConfig(
+        num_codebooks=2, codebook_size=size, num_levels_per_group=level_sizes, input_dim=2 * len(level_sizes)
+    )
+    codes = torch.arange(size).reshape(-1, 1).expand(-1, 2)
+    levels = torch.tensor(level_sizes)
+    bases = torch.cumprod(torch.tensor([1, *level_sizes[:-1]]), dim=0)
+    scale = levels // 2
+    expected = (((codes.unsqueeze(-1) // bases) % levels - scale) / scale).flatten(start_dim=1)
+    torch.testing.assert_close(PackedFiniteScalarDequantizer(config)(codes), expected, rtol=0, atol=0)
 
 
 def test_packed_profile_path_registers_state_layers() -> None:
@@ -132,6 +139,21 @@ def test_packed_profile_path_registers_state_layers() -> None:
     with set_forward_context(None, vllm_config):
         actual = packed(codes.squeeze(0))
     assert actual.shape == (5 * config.samples_per_frame,)
+
+
+def test_codec_state_binding_preserves_each_page_stride():
+    vllm_config = VllmConfig()
+    with set_current_vllm_config(vllm_config):
+        layer = CodecStateLayer(time_factor=1, dtype=torch.float32, prefix="codec")
+    pages = torch.zeros((3, 1, 1, (CODEC_STATE_ELEMENTS + 4) * 4), dtype=torch.int8)
+
+    layer.bind_kv_cache(pages)
+    state = layer.kv_cache[0]
+    assert state.shape == (3, CODEC_STATE_ELEMENTS)
+    assert state.stride() == (CODEC_STATE_ELEMENTS + 4, 1)
+    state[1, 4] = 3.0
+    assert pages.view(torch.float32)[1, 0, 0, 4] == 3.0
+    assert pages.view(torch.float32)[0, 0, 0, 4] == 0.0
 
 
 def test_vllm_state_pages_match_full_decode() -> None:
@@ -258,3 +280,56 @@ def test_cuda_packed_kernels_preserve_state_across_chunks() -> None:
             pieces.append(streamed(codes[0, frame : frame + 1]))
 
     torch.testing.assert_close(torch.cat(pieces), expected, atol=3e-5, rtol=3e-5)
+
+
+@pytest.mark.gpu
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for packed convolution")
+@pytest.mark.parametrize("lengths,uses_padding", [((3, 1), True), ((8, 1, 1), False)])
+@torch.inference_mode()
+def test_cuda_ragged_causal_conv_preserves_prefixes_and_state(lengths, uses_padding, monkeypatch):
+    if uses_padding and not torch.backends.cudnn.is_available():
+        pytest.skip("cuDNN is required for padded convolution")
+    torch.manual_seed(31)
+    monkeypatch.setattr(torch.backends.cudnn, "allow_tf32", False)
+    batch_size = len(lengths) + 1
+    pages = tuple(reversed(range(batch_size)))
+    initial = [True, False, *([True] * (len(lengths) - 1))]
+    time_factor = 2
+    config = VllmConfig()
+    with set_current_vllm_config(config):
+        layer = PackedCausalConv1d(
+            4, 8, 5, activate=False, time_factor=time_factor, dtype=torch.float32, prefix="ragged"
+        ).cuda()
+    state = torch.randn(batch_size, CODEC_STATE_ELEMENTS, device="cuda")
+    expected_state = state.clone()
+    layer.kv_cache = [state]
+    inputs = torch.randn((1 + sum(lengths)) * time_factor, 4, device="cuda")
+    request_metadata = mixed_metadata(sum(lengths), device="cuda")
+    request_metadata.num_prefills = len(lengths)
+    request_metadata.num_reqs = batch_size
+    request_metadata.seq_lens = torch.tensor((2, *lengths), dtype=torch.int32, device="cuda")
+    request_metadata.query_start_loc_p = torch.tensor((0, *lengths), device="cuda").cumsum(0, dtype=torch.int32)
+    request_metadata.state_indices_tensor_d = torch.tensor([[pages[0]]], dtype=torch.int32, device="cuda")
+    request_metadata.state_indices_tensor_p = torch.tensor(pages[1:], dtype=torch.int32, device="cuda")
+    request_metadata.has_initial_states_p = torch.tensor(initial[1:], device="cuda")
+    request_metadata.codec_max_query_len = max(lengths)
+
+    conv_inputs = []
+    conv2d = torch.nn.functional.conv2d
+
+    def track_conv2d(inputs, weight, bias):
+        assert inputs.is_contiguous(memory_format=torch.channels_last)
+        assert weight.squeeze(2).is_contiguous()
+        conv_inputs.append(inputs.shape)
+        return conv2d(inputs, weight, bias)
+
+    monkeypatch.setattr(torch.nn.functional, "conv2d", track_conv2d)
+    with set_forward_context({layer.prefix: request_metadata}, config):
+        actual = layer(inputs)
+    assert conv_inputs == ([(len(lengths), 4, 1, layer.history + max(lengths) * time_factor)] if uses_padding else [])
+    sequences = inputs.split([length * time_factor for length in (1, *lengths)])
+    expected = torch.cat(
+        [layer._one(seq, expected_state[page], has_state) for seq, page, has_state in zip(sequences, pages, initial)]
+    )
+    torch.testing.assert_close(actual, expected, atol=2e-5, rtol=2e-5)
+    torch.testing.assert_close(state, expected_state, atol=0, rtol=0)

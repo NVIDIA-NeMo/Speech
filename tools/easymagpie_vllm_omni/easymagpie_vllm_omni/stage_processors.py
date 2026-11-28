@@ -24,15 +24,12 @@ from collections.abc import Mapping
 from typing import Any
 
 import torch
+from easymagpie_vllm_omni.config import NO_AUDIO_FRAME
 from vllm.logger import init_logger
 from vllm_omni.data_entry_keys import CodesStruct, MetaStruct, OmniPayload, OmniPayloadStruct
 from vllm_omni.engine.serialization import deserialize_additional_information
 
 logger = init_logger(__name__)
-
-
-# Base codebook size, excluding control tokens.
-_CODEBOOK_SIZE = 1024
 
 
 def _empty_finished_payload() -> dict[str, Any]:
@@ -44,17 +41,20 @@ def _empty_finished_payload() -> dict[str, Any]:
 
 
 def _filter_audio_codes(audio_codes: torch.Tensor) -> torch.Tensor:
-    """Drop all-zero (padding/warm-up), negative, and special-token frames.
+    """Drop prefill/no-audio rows marked with ``NO_AUDIO_FRAME``.
 
-    Special audio tokens (bos/eos/mask) live at ``codebook_size + offset`` — any
-    frame containing one is an out-of-band control frame, not audio, so it is
-    removed here (the decoder additionally clamps as a safety net).
+    Control tokens are forwarded to Stage 1, which interprets them using its
+    codec configuration and trims a partially filled final stacked frame.
+    Streaming speech-delay warm-up frames are filtered separately by the async
+    stage before codec buffering.
     """
-    if not isinstance(audio_codes, torch.Tensor) or audio_codes.numel() == 0 or audio_codes.ndim != 2:
+    if audio_codes.ndim != 2:
+        raise ValueError(f"Stage-0 audio codes must have shape [frames, codebooks], got {tuple(audio_codes.shape)}")
+    if audio_codes.numel() == 0:
         return audio_codes
-    valid_mask = (
-        (audio_codes >= 0).all(dim=1) & audio_codes.any(dim=1) & (audio_codes.max(dim=1).values < _CODEBOOK_SIZE)
-    )
+    # Stage 0 writes either a complete codebook row or the sentinel in every
+    # channel, so checking one channel avoids a reduction over all codebooks.
+    valid_mask = audio_codes[:, 0] != NO_AUDIO_FRAME
     return audio_codes[valid_mask]
 
 
@@ -176,7 +176,7 @@ def talker2code2wav_full_payload(transfer_manager, multimodal_output, request, i
     kept_frames = int(audio.shape[0]) if audio.ndim == 2 else 0
     logger.info(
         "easymagpie.talker2code2wav_full_payload: req=%s accumulated %d frames "
-        "(%d after filtering control/padding).",
+        "(%d after filtering prefill/no-audio sentinel rows).",
         rid,
         raw_frames,
         kept_frames,
@@ -201,7 +201,8 @@ def _extract_last_frame(multimodal_output: OmniPayload | dict[str, Any]) -> torc
         return None
     if audio_codes.ndim == 2:
         frame = audio_codes[-1]
-        if frame.numel() == 0 or not bool(frame.any().item()):
+        # Prefill callbacks carry the no-audio sentinel.
+        if frame.numel() == 0 or int(frame[0].item()) == NO_AUDIO_FRAME:
             return None
         return frame.to(torch.long).reshape(-1)
     if audio_codes.ndim == 1:
@@ -259,17 +260,6 @@ def _persistent_list_state(transfer_manager: Any, attr: str) -> dict:
     return state
 
 
-def _is_true_request_finish(request: Any) -> bool:
-    """True only at the real end of the utterance, not at a segment stop.
-
-    Mirrors the transfer adapter's own ``request.is_finished() and not
-    request.resumable`` rule: a resumable streaming request reports
-    ``is_finished()`` at every segment boundary while still expecting more
-    input, so it must not be treated as the terminal finish.
-    """
-    return bool(getattr(request, "is_finished", lambda: False)()) and not bool(getattr(request, "resumable", False))
-
-
 def talker2code2wav_async_chunk(
     transfer_manager: Any,
     multimodal_output: OmniPayload | dict[str, Any] | None,
@@ -320,9 +310,6 @@ def talker2code2wav_async_chunk(
             # instead of a Python list round-trip.
             frame_row = frame.detach().to(device="cpu", dtype=torch.long).reshape(-1).contiguous()
             frame_buffer[request_id].append(frame_row)
-            # Keep the framework buffer populated too (some connector bookkeeping
-            # counts active requests by its non-empty per-request lists).
-            transfer_manager.code_prompt_token_ids[request_id].append(frame_row)
     elif not finished:
         return None
 
@@ -355,7 +342,7 @@ def talker2code2wav_async_chunk(
     emitted_chunks_state = _persistent_state(transfer_manager, "_emp_emitted_chunks")
     emitted_chunks = emitted_chunks_state[request_id]
 
-    true_finished = _is_true_request_finish(request) or reset_codec
+    true_finished = finished and (reset_codec or not bool(getattr(request, "resumable", False)))
 
     def _cleanup() -> None:
         emitted_state.pop(request_id, None)
@@ -372,7 +359,7 @@ def talker2code2wav_async_chunk(
             return OmniPayloadStruct(
                 codes=CodesStruct(audio=torch.empty(0, dtype=torch.long)),
                 meta=MetaStruct(
-                    finished=torch.tensor(True, dtype=torch.bool),
+                    finished=torch.tensor(true_finished, dtype=torch.bool),
                     codec_streaming=not reset_codec,
                 ),
             )
@@ -415,7 +402,7 @@ def talker2code2wav_async_chunk(
         codes=CodesStruct(audio=code_predictor_codes),
         meta=MetaStruct(
             left_context_size=0,
-            finished=torch.tensor(finished, dtype=torch.bool),
+            finished=torch.tensor(true_finished, dtype=torch.bool),
             codec_streaming=not reset_codec,
         ),
     )

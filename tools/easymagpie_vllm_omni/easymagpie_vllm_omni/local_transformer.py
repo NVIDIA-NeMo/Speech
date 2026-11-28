@@ -165,7 +165,7 @@ class EasyMagpieCodeLoop(nn.Module):
         # register the parent as a submodule (which would duplicate params).
         self._predictor_ref: tuple = ()
 
-    def bind_predictor(self, predictor: "EasyMagpieCodePredictor") -> None:
+    def bind_predictor(self, predictor: "EasyMagpieLocalTransformerPredictor") -> None:
         self._predictor_ref = (predictor,)
         self.top_k = predictor._sample_top_k
 
@@ -196,7 +196,7 @@ class EasyMagpieCodeLoop(nn.Module):
         forbidden = cp.forbidden_mask
         codes: list[torch.Tensor] = []
         for k in range(n):
-            hidden = cp.local_transformer(buf)
+            hidden = cp.local_transformer(buf[:, : k + 1])
             row = cp.local_transformer_audio_out_projection(hidden[:, k, :])
             logits = cp.local_transformer_out_projections[k](row)
             logits = logits.masked_fill(forbidden, float("-inf")) / temperature
@@ -210,7 +210,7 @@ class EasyMagpieCodeLoop(nn.Module):
         return torch.stack(codes, dim=1)
 
 
-class EasyMagpieCodePredictor(nn.Module):
+class EasyMagpieLocalTransformerPredictor(nn.Module):
     """Predict all stacked audio codebooks from each backbone hidden state."""
 
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = "") -> None:

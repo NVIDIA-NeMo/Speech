@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-FROM vllm/vllm-openai:v0.24.0
+FROM vllm/vllm-openai:v0.32.0
 
 COPY tools/easymagpie_vllm_omni/requirements.txt /tmp/easymagpie-requirements.txt
 

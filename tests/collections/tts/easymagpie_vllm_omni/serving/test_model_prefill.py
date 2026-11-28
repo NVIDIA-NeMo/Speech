@@ -19,6 +19,7 @@ import torch
 from easymagpie_vllm_omni.codec.encoder import EasyMagpieCodecEncoderOutput
 from easymagpie_vllm_omni.easymagpie import EasyMagpieTTSForConditionalGeneration
 from torch import nn
+from vllm.config import CUDAGraphMode
 
 
 def test_text_prefill_embeddings_add_phoneme_bos_at_position_three():
@@ -534,3 +535,218 @@ def test_first_agent_decode_uses_user_speaking_end_token():
     model.has_phoneme = False
     model._combined_embeddings = torch.zeros(1, 3)
     model._dec_text_tokens = torch.zeros(1, dtype=torch.long)
+
+
+@pytest.mark.parametrize("computed, expected", [(70, "prefill"), (72, "decode")])
+def test_text_resume_uses_decode_after_initial_context(computed, expected):
+    model = SimpleNamespace(
+        _batch_slot_offset=lambda _ids, start: start,
+        _dec_text_mask=torch.ones(1),
+        _dec_audio_valid=torch.ones(1),
+        has_phoneme=False,
+        _preprocess_prefill=lambda *args: "prefill",
+        _preprocess_decode_rows=lambda *args: ("decode", ({},)),
+    )
+    result = EasyMagpieTTSForConditionalGeneration.preprocess(
+        model,
+        torch.zeros(1, dtype=torch.long),
+        None,
+        _omni_is_prefill=True,
+        _omni_num_computed_tokens=computed,
+        text_stream_context_len=71,
+        text_token=[42],
+    )
+    assert (result[1] if isinstance(result, tuple) else result) == expected
+
+
+def test_async_omni_output_slices_each_request_in_a_padded_batch():
+    from vllm_omni.worker.output.payload_build import build_omni_mm_payload
+
+    hidden = torch.zeros(40, 8)
+    model = SimpleNamespace(_out_codes=torch.arange(80).view(40, 2), _single_stage_audio=False)
+    output = EasyMagpieTTSForConditionalGeneration.make_omni_output(
+        model, hidden, request_token_spans=[(index, index + 1) for index in range(34)]
+    )
+
+    assert output.text_hidden_states is hidden
+    assert set(output.multimodal_outputs) == {"codes"}
+    per_request = build_omni_mm_payload(
+        combined_multimodal_outputs=None,
+        mm_cpu={"codes.audio": output.multimodal_outputs["codes"]["audio"]},
+        rid="request-33",
+        idx=33,
+        start=33,
+        end=34,
+        audio_sparse_output=False,
+        sparse_mm_index={},
+        hidden_seq_len=0,
+        scheduled_seq_len=34,
+    )
+    torch.testing.assert_close(per_request["codes.audio"], model._out_codes[33:34])
+
+
+def test_runner_owns_the_feedback_snapshots():
+    from vllm_omni.worker.gpu_model_runner import OmniGPUModelRunner
+
+    model = SimpleNamespace(
+        has_phoneme=True,
+        _dec_phoneme_state=torch.tensor([[5, 6, 0], [4, 7, 1]]),
+        gpu_resident_buffer_keys=EasyMagpieTTSForConditionalGeneration.gpu_resident_buffer_keys,
+    )
+    runner = object.__new__(OmniGPUModelRunner)
+    runner.model = model
+    runner.requests = {"id": SimpleNamespace()}
+    runner.model_intermediate_buffer = {}
+    codes = torch.tensor([[1, 2], [3, 4]])
+    output = EasyMagpieTTSForConditionalGeneration.postprocess(
+        model, torch.zeros(2, 3), multimodal_outputs={"codes": {"audio": codes}}
+    )
+
+    runner._update_intermediate_buffer("id", output)
+    codes.zero_()
+    model._dec_phoneme_state.zero_()
+    retained = runner.model_intermediate_buffer["id"]["gpu_state"]
+    torch.testing.assert_close(retained["last_audio_codes"], torch.tensor([[3, 4]]))
+    torch.testing.assert_close(retained["last_phoneme_token"], torch.tensor([[4, 7, 1]]))
+
+
+@pytest.fixture
+def phoneme_feedback_model():
+    model = EasyMagpieTTSForConditionalGeneration.__new__(EasyMagpieTTSForConditionalGeneration)
+    nn.Module.__init__(model)
+    model.arch = SimpleNamespace(phoneme_stacking_factor=2, phoneme_vocab_size=8, audio_bos_id=1)
+    model.has_phoneme = True
+    model.phonemes_delay = 1
+    model.phoneme_bos_id = model.phoneme_eos_id = 7
+    model.phoneme_confidence_unk_threshold = 0.0
+    model.speech_delay = 9
+    model.audio_eos_id = 9
+    model.embedding_dim = 2
+    model.code_predictor = SimpleNamespace(
+        requires_all_tokens=True,
+        embed_audio_frame=lambda codes: torch.zeros_like(codes, dtype=torch.float32),
+        generate_codes=lambda hidden, **kwargs: torch.zeros_like(hidden, dtype=torch.long),
+        advance=lambda *args, **kwargs: None,
+    )
+    model.text_embedding = nn.Embedding(1, 2)
+    model._embed_phoneme = lambda tokens: tokens.float()
+    model.phoneme_final_proj = lambda hidden: nn.functional.one_hot(hidden.long(), 8).flatten(1).float()
+    model._dec_text_tokens = torch.zeros(3, dtype=torch.long)
+    model._dec_text_mask = torch.zeros(3, dtype=torch.long)
+    model._dec_audio_codes = torch.zeros(3, 2, dtype=torch.long)
+    model._dec_audio_valid = torch.zeros(3, dtype=torch.long)
+    model._dec_phoneme_state = torch.zeros(3, 3, dtype=torch.long)
+    model._dec_phoneme_valid = torch.zeros(3, dtype=torch.long)
+    model._combined_embeddings = torch.zeros(3, 2)
+    model._out_codes = torch.zeros(3, 2, dtype=torch.long)
+    model._token_stop = torch.zeros(3, dtype=torch.bool)
+    model._sample_stop = torch.zeros(3, dtype=torch.bool)
+    return model
+
+
+def test_batched_decode_preprocess_preserves_independent_request_state(phoneme_feedback_model):
+    model = phoneme_feedback_model
+    model.num_codebooks = 2
+    model.speech_delay = 1
+    model.arch.use_user_speaking_end_token = True
+    model.arch.audio_user_speaking_end_id = 5
+    ids = torch.zeros(3, dtype=torch.long)[1:]
+    infos = [
+        {
+            "decode_offset": 1,
+            "additional_information": {"decode_offset": 0, "text_token": [4], "text_token_start": 1},
+            "text_tokens": [2],
+            "user_audio_prefilled": True,
+        },
+        {
+            "decode_offset": 4,
+            "text_tokens": [3],
+            "gpu_state": {
+                "last_phoneme_token": torch.tensor([[4, 7, 1]]),
+                "last_audio_codes": torch.tensor([[2, 3]]),
+            },
+        },
+    ]
+
+    result_ids, embeds, updates = model.preprocess_decode_batch(input_ids=ids, req_infos=infos)
+
+    assert result_ids is ids
+    torch.testing.assert_close(embeds, torch.zeros(2, model.embedding_dim))
+    assert updates == [{"decode_offset": 2, "text_tokens": [2, 4]}, {"decode_offset": 5}]
+    assert model._dec_text_tokens.tolist() == [0, 4, 0]
+    assert model._dec_text_mask.tolist() == [0, 1, 0]
+    assert model._dec_phoneme_valid.tolist() == [0, 1, 2]
+    assert model._dec_phoneme_state.tolist() == [[0, 0, 0], [7, 7, 0], [4, 7, 1]]
+    assert model._dec_audio_valid.tolist() == [0, 1, 1]
+    assert model._dec_audio_codes.tolist() == [[0, 0], [5, 5], [2, 3]]
+
+
+@torch.inference_mode()
+def test_resumed_phoneme_eos_is_fed_once_then_masks_the_channel(phoneme_feedback_model):
+    from vllm_omni.worker.gpu_model_runner import OmniGPUModelRunner
+
+    model = phoneme_feedback_model
+    runner = object.__new__(OmniGPUModelRunner)
+    runner.model = model
+    runner.requests = {"id": SimpleNamespace()}
+    runner.model_intermediate_buffer = {"id": {}}
+    state = runner.model_intermediate_buffer["id"]
+    ids = torch.zeros(1, dtype=torch.long)
+    for prediction, embedded, ended in [
+        ([4, 7], [0, 0], 0),
+        ([4, 7], [7, 7], 0),
+        ([2, 3], [4, 7], 1),
+        ([1, 2], [0, 0], 1),
+    ]:
+        _, combined, update = model.preprocess(
+            ids,
+            None,
+            _omni_is_prefill=True,
+            _omni_num_computed_tokens=5,
+            text_stream_context_len=5,
+            text_token=[],
+            **state,
+        )
+        model._assemble_decode_embeddings(combined, slice(0, 1))
+        torch.testing.assert_close(combined[0], torch.tensor(embedded, dtype=torch.float32))
+        hidden = torch.tensor([prediction])
+        model._predict_phonemes(hidden, slice(0, 1))
+        runner._update_intermediate_buffer("id", {**update, **model.postprocess(hidden)})
+        torch.testing.assert_close(state["gpu_state"]["last_phoneme_token"], torch.tensor([[*prediction, ended]]))
+
+
+@pytest.mark.parametrize(
+    "prefill_rows,has_decode,user_audio", [(2, False, True), (2, True, True), (2, False, False), (1, False, True)]
+)
+@torch.inference_mode()
+def test_prefill_refreshes_the_last_phoneme(phoneme_feedback_model, prefill_rows, has_decode, user_audio, monkeypatch):
+    model = phoneme_feedback_model
+    model._maybe_set_code_sampling_params = lambda _: None
+    model._build_user_audio_prefill_chunk = lambda **kwargs: kwargs["input_embeds"]
+    model._build_reference_audio_prefill_chunk = lambda **kwargs: (kwargs["input_embeds"], 1, False, 1)
+    ids = torch.zeros(prefill_rows + has_decode, dtype=torch.long)
+    model._dec_phoneme_state[has_decode : ids.numel()] = torch.tensor([3, 4, 1])
+    model._dec_phoneme_valid[has_decode : ids.numel()].fill_(1)
+    combined = torch.zeros(ids.numel(), 2)
+    _, _, update = model.preprocess(
+        ids[-prefill_rows:],
+        combined[-prefill_rows:],
+        _omni_is_prefill=True,
+        _omni_num_computed_tokens=1,
+        _omni_prompt_len=prefill_rows + 1,
+        speaker_reference_prefilled=user_audio,
+        reference_conditioning_len=1,
+        gpu_state={"last_phoneme_token": torch.tensor([[1, 2, 1]])},
+    )
+    assert bool(update.get("user_audio_prefilled")) == user_audio
+    model.vllm_config = SimpleNamespace(compilation_config=SimpleNamespace(cudagraph_mode=CUDAGraphMode.NONE))
+    query_start = torch.tensor([0, 1, ids.numel()] if has_decode else [0, ids.numel()])
+    metadata = SimpleNamespace(max_query_len=prefill_rows, query_start_loc=query_start)
+    monkeypatch.setattr(
+        "easymagpie_vllm_omni.easymagpie.get_forward_context", lambda: SimpleNamespace(attn_metadata=metadata)
+    )
+    model.backbone = lambda **kwargs: torch.tensor([[1, 2], [3, 4], [5, 6]][-ids.numel() :])
+    hidden = model(ids, torch.arange(ids.numel()), inputs_embeds=combined)
+    torch.testing.assert_close(model._combined_embeddings[: ids.numel()], combined)
+    feedback = model.postprocess(hidden[-prefill_rows:])["gpu_state"]["last_phoneme_token"]
+    torch.testing.assert_close(feedback, torch.tensor([[5, 6, int(not user_audio)]]))

@@ -19,7 +19,8 @@ from types import SimpleNamespace
 
 import pytest
 import torch
-from easymagpie_vllm_omni.stage_processors import talker2code2wav_async_chunk
+from easymagpie_vllm_omni.config import NO_AUDIO_FRAME
+from easymagpie_vllm_omni.stage_processors import _filter_audio_codes, talker2code2wav_async_chunk
 
 
 class _Request:
@@ -63,19 +64,18 @@ def test_async_codec_state_stays_continuous_across_resumable_segments():
     request.finished = True
     warmup_flush = talker2code2wav_async_chunk(manager, _output(2), request, is_finished=True)
     assert warmup_flush.codes.audio.numel() == 0
-    manager.code_prompt_token_ids.pop(request.external_req_id, None)
+    assert not bool(warmup_flush.meta.finished)
 
-    # The framework buffer is reset per segment, but the processor's request
-    # state retains the real acoustic frames and its emission high-water mark.
+    # The processor retains its emission position across a segment stop.
     request.finished = False
     request.output_token_ids = [0]
     assert talker2code2wav_async_chunk(manager, _output(3), request) is None
     request.output_token_ids = [0, 0]
     request.finished = True
     first = talker2code2wav_async_chunk(manager, _output(4), request, is_finished=True)
+    assert not bool(first.meta.finished)
     torch.testing.assert_close(first.codes.audio, torch.tensor([[3, 103], [4, 104]]))
     assert first.meta.left_context_size == 0
-    manager.code_prompt_token_ids.pop(request.external_req_id, None)
 
     request.finished = False
     request.output_token_ids = [0]
@@ -160,7 +160,7 @@ def test_async_codec_drops_only_warmup_not_moved_into_prefill():
     assert (
         talker2code2wav_async_chunk(
             manager,
-            {"audio_codes": torch.zeros(1, 2, dtype=torch.long)},
+            {"audio_codes": torch.full((1, 2), NO_AUDIO_FRAME, dtype=torch.long)},
             request,
         )
         is None
@@ -170,6 +170,17 @@ def test_async_codec_drops_only_warmup_not_moved_into_prefill():
     assert talker2code2wav_async_chunk(manager, _output(1), request) is None
     first_audio = talker2code2wav_async_chunk(manager, _output(2), request)
     torch.testing.assert_close(first_audio.codes.audio, torch.tensor([[2, 102]]))
+
+
+def test_async_codec_preserves_all_zero_acoustic_frame():
+    manager = _manager()
+    manager.config.hf_config = SimpleNamespace(streaming_speech_delay=0)
+    manager.connector.config["extra"]["codec_chunk_frames"] = 1
+    request = _Request()
+
+    output = talker2code2wav_async_chunk(manager, {"audio_codes": torch.zeros(1, 2, dtype=torch.long)}, request)
+
+    torch.testing.assert_close(output.codes.audio, torch.zeros(1, 2, dtype=torch.long))
 
 
 def test_async_codec_forwards_terminal_audio_eos_row():
@@ -198,6 +209,21 @@ def test_async_codec_forwards_terminal_audio_eos_row():
     torch.testing.assert_close(terminal.codes.audio, torch.tensor([[1, 101], [2, 102], [1025, 777]]))
 
 
+def test_forced_terminal_flushes_short_codec_tail_before_request_status_changes():
+    manager = _manager()
+    manager.config.hf_config.streaming_speech_delay = 0
+    manager.connector.config["extra"]["codec_chunk_frames"] = 4
+    request = _Request()
+
+    assert talker2code2wav_async_chunk(manager, _output(1), request) is None
+    request.resumable = False
+    terminal = talker2code2wav_async_chunk(manager, None, request, is_finished=True)
+
+    assert bool(terminal.meta.finished)
+    torch.testing.assert_close(terminal.codes.audio, torch.tensor([[1, 101]]))
+    assert request.external_req_id not in manager._emp_frame_buffer
+
+
 def test_async_codec_buffer_drops_emitted_rows():
     manager = _manager()
     manager.config.hf_config.streaming_speech_delay = 0
@@ -214,6 +240,7 @@ def test_async_codec_buffer_drops_emitted_rows():
     assert buffer == []
     assert manager._emp_frame_buffer_base[request.external_req_id] == 10
     assert manager._emp_emitted_frames[request.external_req_id] == 10
+    assert request.external_req_id not in manager.code_prompt_token_ids
 
 
 def test_async_codec_uses_configured_startup_chunk_ramp():
@@ -283,3 +310,19 @@ def test_stateful_codec_emits_only_new_time_major_rows():
     assert second.codes.audio.shape == (2, 2)
     torch.testing.assert_close(second.codes.audio, torch.tensor([[3, 103], [4, 104]]))
     assert manager._emp_frame_buffer_base[request.external_req_id] == 4
+
+
+def test_filter_drops_only_no_audio_sentinel_rows():
+    frames = torch.tensor(
+        [[NO_AUDIO_FRAME, NO_AUDIO_FRAME], [0, 0], [2048, 3000], [4097, 1]],
+        dtype=torch.long,
+    )
+
+    filtered = _filter_audio_codes(frames)
+
+    torch.testing.assert_close(filtered, frames[1:])
+
+
+def test_filter_rejects_malformed_stage0_codes():
+    with pytest.raises(ValueError, match=r"\[frames, codebooks\]"):
+        _filter_audio_codes(torch.zeros(2, dtype=torch.long))

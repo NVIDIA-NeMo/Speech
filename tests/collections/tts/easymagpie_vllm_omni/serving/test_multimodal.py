@@ -163,19 +163,16 @@ def test_raw_audio_limit_rejects_reference_and_user_items(output_kind):
     max_samples = 16
     processor.info = SimpleNamespace(
         arch=arch,
-        get_tokenizer=lambda: SimpleNamespace(encode=lambda *args, **kwargs: []),
         get_max_audio_samples=lambda: max_samples,
     )
     processor_kwargs = {"_easymagpie_audio_outputs": [output_kind]}
     audio_at_limit = np.zeros(max_samples, dtype=np.float32)
-    output = processor._call_hf_processor("", {"audios": [audio_at_limit]}, processor_kwargs, {})
+    output = processor._call_hf_processor({"audio": [audio_at_limit]}, processor_kwargs)
 
     assert output["audio_lens"].tolist() == [max_samples]
 
     with pytest.raises(ValueError, match=rf"raw audio has {max_samples + 1} samples"):
         processor._call_hf_processor(
-            "",
-            {"audios": [np.zeros(max_samples + 1, dtype=np.float32)]},
+            {"audio": [np.zeros(max_samples + 1, dtype=np.float32)]},
             processor_kwargs,
-            {},
         )

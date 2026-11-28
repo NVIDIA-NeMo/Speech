@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from itertools import accumulate
 from typing import Any
 
 import torch
@@ -101,17 +102,18 @@ class EasyMagpieCodecForConditionalGeneration(nn.Module):
                     continue
             codes = info.get("codes", {}) if isinstance(info, dict) else {}
             audio = codes.get("audio") if isinstance(codes, dict) else None
-            tensor = torch.as_tensor(audio, dtype=torch.long, device=device)
+            source_device = audio.device if isinstance(audio, torch.Tensor) else "cpu"
+            tensor = torch.as_tensor(audio, dtype=torch.long, device=source_device)
             if tensor.ndim == 2:
                 if tensor.shape[1] != q:
                     raise ValueError(f"expected codec payload [frames, {q}], got {tuple(tensor.shape)}")
-                rows = tensor.contiguous()
+                rows = tensor
             elif tensor.ndim == 1:
                 flat = tensor.reshape(-1)
                 if flat.numel() % q:
                     raise ValueError(f"codec payload length {flat.numel()} is not divisible by {q}")
                 frames = flat.numel() // q
-                rows = flat.view(q, frames).transpose(0, 1).contiguous()
+                rows = flat.view(q, frames).transpose(0, 1)
             else:
                 raise ValueError(f"expected a 1-D or 2-D codec payload, got {tuple(tensor.shape)}")
             if scheduled_frames is not None and rows.shape[0] != scheduled_frames:
@@ -123,7 +125,28 @@ class EasyMagpieCodecForConditionalGeneration(nn.Module):
             frame_counts.append(int(rows.shape[0]))
         if not packed:
             return torch.empty((0, q), dtype=torch.long, device=device), []
+        source_device = packed[0].device
+        if any(rows.device != source_device for rows in packed):
+            packed = [rows.to(device=device, non_blocking=device.type != "cpu") for rows in packed]
         return torch.cat(packed, dim=0), frame_counts
+
+    def _valid_sample_counts(self, codes: torch.Tensor, frame_counts: list[int]) -> list[int]:
+        """Count samples before the first control subframe in each terminal frame."""
+        last_frame_indices = [end - 1 for end, frames in zip(accumulate(frame_counts), frame_counts) if frames]
+        if not last_frame_indices:
+            return [0] * len(frame_counts)
+        stacking = self.config.frame_stacking_factor
+        indices = torch.tensor(last_frame_indices, device=codes.device)
+        last_frames = codes.index_select(0, indices).reshape(len(last_frame_indices), -1, stacking)
+        control = (last_frames >= self.config.codebook_size).any(dim=1)
+        subframes = torch.arange(stacking, device=codes.device)
+        valid_last_subframes = iter(torch.where(control, subframes, stacking).amin(dim=1).tolist())
+        samples_per_frame = self.config.samples_per_frame
+        samples_per_subframe = self.config.samples_per_codec_frame
+        return [
+            (frames - 1) * samples_per_frame + next(valid_last_subframes) * samples_per_subframe if frames else 0
+            for frames in frame_counts
+        ]
 
     @torch.no_grad()
     def forward(
@@ -142,7 +165,7 @@ class EasyMagpieCodecForConditionalGeneration(nn.Module):
             input_ids = torch.empty((0,), dtype=torch.long, device=self.vllm_config.device_config.device)
 
         if codec_codes is not None:
-            codes = codec_codes.to(device=input_ids.device, dtype=torch.long)
+            codes = codec_codes.to(dtype=torch.long)
             frame_counts = [int(codes.shape[0])]
         elif runtime_additional_information:
             codes, frame_counts = self._payload_codes(
@@ -166,23 +189,18 @@ class EasyMagpieCodecForConditionalGeneration(nn.Module):
                 "EasyMagpie native codec requires one scheduled placeholder per model frame: "
                 f"got {input_ids.numel()} placeholders and {codes.shape[0]} code frames"
             )
-        packed_audio = self.codec(codes)
+        sample_counts = [frames * self.config.samples_per_frame for frames in frame_counts]
+        # Connector payloads normally arrive on the host, where cropping
+        # lengths can be read without synchronizing the decoder's device.
+        valid_sample_counts = sample_counts
+        if codec_codes is not None or runtime_additional_information:
+            valid_sample_counts = self._valid_sample_counts(codes, frame_counts)
+        device = input_ids.device
+        packed_audio = self.codec(codes.to(device=device, non_blocking=device.type != "cpu"))
         outputs: list[torch.Tensor] = []
-        frame_offset = 0
         offset = 0
-        for frames in frame_counts:
-            samples = frames * self.config.samples_per_frame
-            valid_samples = samples
-            if frames > 0:
-                last = codes[frame_offset + frames - 1].view(-1, self.config.frame_stacking_factor)
-                control = (last >= self.config.codebook_size).any(dim=0)
-                if control.any():
-                    valid_subframes = int(control.to(torch.int64).argmax().item())
-                    valid_samples -= (self.config.frame_stacking_factor - valid_subframes) * (
-                        self.config.samples_per_codec_frame
-                    )
+        for samples, valid_samples in zip(sample_counts, valid_sample_counts):
             outputs.append(packed_audio[offset : offset + valid_samples].float())
-            frame_offset += frames
             offset += samples
         sample_rate = torch.tensor(self.config.output_sample_rate, dtype=torch.int32)
         return OmniOutput(
@@ -201,5 +219,9 @@ class EasyMagpieCodecForConditionalGeneration(nn.Module):
         raise TypeError(f"unexpected EasyMagpie codec output: {type(model_outputs)}")
 
     def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
-        mapped = ((f"codec.{name}" if name.startswith("audio_decoder.") else name, tensor) for name, tensor in weights)
-        return AutoWeightsLoader(self, skip_prefixes=["codec.dequantizer."]).load_weights(mapped)
+        mapped = (
+            (f"codec.{name}" if name.startswith("audio_decoder.") else name, tensor)
+            for name, tensor in weights
+            if not name.startswith("codec.dequantizer.")
+        )
+        return AutoWeightsLoader(self).load_weights(mapped)

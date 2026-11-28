@@ -160,6 +160,31 @@ def test_spectrogram_transformerunet_forward(spectrogram_transformerunet, mock_i
     assert torch.all(output_length == input_length)
 
 
+@pytest.mark.unit
+def test_spectrogram_transformerunet_forward_without_input_length(spectrogram_transformerunet, mock_input_4d):
+    input_, _, condition = mock_input_4d
+    input_ = torch.view_as_complex(torch.stack([input_, input_], dim=-1)).contiguous()
+
+    batch_size, _, input_dim, time_steps = input_.shape
+
+    output, output_length = spectrogram_transformerunet(
+        input=input_,
+        input_length=None,
+        condition=condition if hasattr(spectrogram_transformerunet, 'sinu_pos_emb') else None,
+    )
+    assert output.shape == (batch_size, spectrogram_transformerunet.out_channels, input_dim, time_steps)
+    assert output_length is None
+
+
+@pytest.mark.unit
+def test_transformerunet_forward_exceeding_max_positions_raises():
+    dim = 16
+    model = TransformerUNet(dim=dim, depth=2, heads=4, ff_mult=2, max_positions=10, adaptive_rmsnorm=False)
+    x = torch.randn(2, 12, dim)
+    with pytest.raises(ValueError, match="exceeds max_positions"):
+        model(x=x)
+
+
 def test_spectrogram_conformer_forward(spectrogram_conformer, mock_input_4d):
     input_, input_length, condition = mock_input_4d
     input_ = torch.view_as_complex(torch.stack([input_, input_], dim=-1)).contiguous()

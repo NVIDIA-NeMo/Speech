@@ -52,6 +52,13 @@ class TransformerDecoderBlock(nn.Module, AttentionAdapterModuleMixin):
         self_attn: block of the self-attention, default `MultiHeadAttention`
         cross_attn: block of the attention over the encoder states, default `MultiHeadAttention`
         feed_forward: block of the feed-forward sub-layer, default `PositionWiseFF`
+        ffn_hidden_dropout: probability of dropout applied inside the feed-forward,
+            to the activation output before the second projection;
+            passed on to the feed-forward block when not zero, which then has to accept it
+        dropout_broadcast: draw the masks of the dropouts on the three sub-layer outputs
+            (``attn_layer_dropout``, ``ffn_dropout``) and inside the feed-forward (``ffn_hidden_dropout``)
+            once per sequence over the feature axis, shared over time, instead of per element;
+            passed on to the three blocks when set, which then have to accept it
     """
 
     def __init__(
@@ -68,15 +75,21 @@ class TransformerDecoderBlock(nn.Module, AttentionAdapterModuleMixin):
         self_attn: ModuleBlock | None = None,
         cross_attn: ModuleBlock | None = None,
         feed_forward: ModuleBlock | None = None,
+        ffn_hidden_dropout: float = 0.0,
+        dropout_broadcast: bool = False,
     ):
         super().__init__()
         self.pre_ln = pre_ln
+        self.dropout_broadcast = dropout_broadcast
         norm = norm or nn.LayerNorm
+        # the two options are only named when set, so that blocks without them keep working with the defaults
+        broadcast_defaults = dict(dropout_broadcast=True) if dropout_broadcast else {}
         attention_defaults = dict(
             hidden_size=hidden_size,
             num_attention_heads=num_attention_heads,
             attn_score_dropout=attn_score_dropout,
             attn_layer_dropout=attn_layer_dropout,
+            **broadcast_defaults,
         )
         self.layer_norm_1 = build_module(norm, normalized_shape=hidden_size)
         self.first_sub_layer = build_module(self_attn or MultiHeadAttention, **attention_defaults)
@@ -91,6 +104,8 @@ class TransformerDecoderBlock(nn.Module, AttentionAdapterModuleMixin):
             inner_size=inner_size,
             ffn_dropout=ffn_dropout,
             hidden_act=hidden_act,
+            **(dict(ffn_hidden_dropout=ffn_hidden_dropout) if ffn_hidden_dropout else {}),
+            **broadcast_defaults,
         )
 
         # Information for the adapter module mixin
@@ -210,6 +225,9 @@ class TransformerDecoderBlock(nn.Module, AttentionAdapterModuleMixin):
         """
         if self.get_enabled_adapters():
             raise NotImplementedError("Enabled adapters are not supported in the sequence-packed decoder block.")
+        # the mask per sequence of `dropout_broadcast` needs the packing; only named when set,
+        # so that feed-forward blocks without the argument keep working
+        packing = dict(context=decoder_context) if self.dropout_broadcast else {}
         # the residual adds are in place like in the padded blocks, which keeps the residual stream in the
         # autocast dtype from the first block on
         if self.pre_ln:
@@ -225,7 +243,7 @@ class TransformerDecoderBlock(nn.Module, AttentionAdapterModuleMixin):
                 normed, encoder_states, encoder_states, decoder_context, encoder_context
             )
             attended += residual
-            output_states = self.third_sub_layer(self.layer_norm_3(attended))
+            output_states = self.third_sub_layer(self.layer_norm_3(attended), **packing)
             output_states += attended
             return output_states
 
@@ -239,7 +257,7 @@ class TransformerDecoderBlock(nn.Module, AttentionAdapterModuleMixin):
         )
         attended += decoder_states
         decoder_states = self.layer_norm_2(attended)
-        output_states = self.third_sub_layer(decoder_states)
+        output_states = self.third_sub_layer(decoder_states, **packing)
         output_states += decoder_states
         return self.layer_norm_3(output_states)
 
@@ -277,6 +295,10 @@ class TransformerDecoder(nn.Module):
         self_attn: block of the self-attention of every block, see `TransformerDecoderBlock`
         cross_attn: block of the attention over the encoder states of every block, see `TransformerDecoderBlock`
         feed_forward: block of the feed-forward sub-layer of every block, see `TransformerDecoderBlock`
+        ffn_hidden_dropout: probability of dropout applied inside the feed-forward,
+            to the activation output before the second projection
+        dropout_broadcast: one mask over the feature axis per sequence, shared over time,
+            for the dropouts on the sub-layer outputs and inside the feed-forward, see `TransformerDecoderBlock`
     """
 
     def __init__(
@@ -295,6 +317,8 @@ class TransformerDecoder(nn.Module):
         self_attn: ModuleBlock | None = None,
         cross_attn: ModuleBlock | None = None,
         feed_forward: ModuleBlock | None = None,
+        ffn_hidden_dropout: float = 0.0,
+        dropout_broadcast: bool = False,
     ):
         super().__init__()
 
@@ -318,6 +342,8 @@ class TransformerDecoder(nn.Module):
             self_attn=self_attn,
             cross_attn=cross_attn,
             feed_forward=feed_forward,
+            ffn_hidden_dropout=ffn_hidden_dropout,
+            dropout_broadcast=dropout_broadcast,
         )
         self.layers = nn.ModuleList([copy.deepcopy(layer) for _ in range(num_layers)])
         self.diagonal = 0

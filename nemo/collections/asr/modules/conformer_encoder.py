@@ -227,6 +227,10 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         self_attn: block of the self-attention of every layer, see `ConformerLayer`;
             `change_attention_model` rebuilds the attention from the same block
         norm: block of every layer norm, see `ConformerLayer`
+        autocast_residual: keep the residual stream and the layer norm inputs of every layer in the autocast dtype
+            under autocast instead of float32, see `ConformerLayer`; default False. With it the encoder output,
+            the InterCTC captures and the ``save_encoder_tensors`` capture come in the autocast dtype instead of
+            float32; meant for bfloat16
 
     Besides the padded ``forward``, the encoder runs sequence-packed through ``forward_sequence_packed``,
     which keeps all activations token-flat with explicit utterance boundaries; see that method for its contract.
@@ -392,6 +396,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
         conv: ModuleBlock | None = None,
         self_attn: ModuleBlock | None = None,
         norm: ModuleBlock | None = None,
+        autocast_residual: bool = False,
         *,
         packed_rel_pos_attention: str = 'triton',
     ):
@@ -574,6 +579,7 @@ class ConformerEncoder(NeuralModule, StreamingEncoder, Exportable, AccessMixin):
                 conv=conv,
                 self_attn=self_attn,
                 norm=norm,
+                autocast_residual=autocast_residual,
             )
             self.layers.append(layer)
         if self.layers and conv is not None:

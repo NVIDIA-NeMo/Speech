@@ -44,7 +44,7 @@ Training and inference need **two separate Python environments**:
 | Environment | Contents | Runs |
 |---|---|---|
 | Training | NeMo Speech with `speechlm2` and the exact NeMo Automodel revision this repository pins | `salm_train.py`, `to_hf.py`, the config, export, and data tools |
-| Inference | vLLM 0.32.0 plus this repository installed in editable mode | `vllm_task_eval.py`, `vllm_label_scores.py`, `prompt_search.py` |
+| Inference | vLLM 0.33.0 plus this repository installed in editable mode | `vllm_task_eval.py`, `vllm_label_scores.py`, `prompt_search.py` |
 
 **Use the repository's exact Automodel pin for training.** `pyproject.toml` pins `nemo_automodel` to a specific git
 revision (`[tool.uv.sources]`); install the training environment from the lockfile
@@ -52,23 +52,23 @@ revision (`[tool.uv.sources]`); install the training environment from the lockfi
 Automodel imports cleanly but fails at the first loss call, because the API changed between revisions. Check with
 `python -c "import nemo_automodel, importlib.metadata as m; print(m.version('nemo_automodel'))"` against the pin.
 
-vLLM 0.27 through 0.32 pin a newer torch than the training stack's TransformerEngine and flash-attn are compiled
+vLLM 0.27 through 0.33 pin a newer torch than the training stack's TransformerEngine and flash-attn are compiled
 against, so installing vLLM into the training environment breaks training. Set up the inference environment
 separately:
 
 ```bash
 uv venv --python 3.13 "$VLLM_VENV"
-VIRTUAL_ENV="$VLLM_VENV" uv pip install vllm==0.32.0
+VIRTUAL_ENV="$VLLM_VENV" uv pip install vllm==0.33.0
 # expose NeMo and its vLLM plugin entry point to the inference environment
 cd /path/to/Speech
-VIRTUAL_ENV="$VLLM_VENV" uv pip install -e ".[core,asr-only,common-only]" torch==2.13.0   # the torch vLLM 0.32 pins
+VIRTUAL_ENV="$VLLM_VENV" uv pip install -e ".[core,asr-only,common-only]" torch==2.14.0   # the torch vLLM 0.33 pins
 VIRTUAL_ENV="$VLLM_VENV" uv pip install "peft>=0.18.1" kaldialign   # kaldialign: WER/MER scoring in task_metrics.py
 ```
 
 `vllm_task_eval.py` checks that the metric's dependencies are importable *before* it loads the model, so a missing
 scoring package fails in seconds rather than after a full decode.
 
-**Pin vLLM to 0.32.0** (it needs Python 3.11 or newer). The SpeechLM plugin and these scripts are tested on that
+**Pin vLLM to 0.33.0** (it needs Python 3.11 or newer). The SpeechLM plugin and these scripts are tested on that
 release only. In the training environment, `cross_entropy_backend: fused_linear` additionally requires
 `uv pip install cut-cross-entropy`.
 

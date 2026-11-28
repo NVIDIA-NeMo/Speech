@@ -93,8 +93,8 @@ nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader
 ```
 
 Use **separate environments** for training (NeMo) and serving (vLLM); they pin different torch versions. Pin
-**vLLM 0.28.0** (0.29 is incompatible with the SpeechLM plugin's processor). Pin `nvidia-cudnn-cu13==9.21.0.82` in
-both and re-pin after any install. Export `VLLM_WORKER_MULTIPROC_METHOD=spawn`. Install commands: guide section 2.
+**vLLM 0.33.0**, the release NeMo's `vllm` extra pins and the scripts are tested on. Pin
+`nvidia-cudnn-cu13==9.21.0.82` in both and re-pin after any install. Export `VLLM_WORKER_MULTIPROC_METHOD=spawn`. Install commands: guide section 2.
 
 ## Step 3: Read the checkpoint, don't assume
 

@@ -255,7 +255,7 @@ Multiple metrics can be configured simultaneously using a ``MultiTaskMetric`` co
 .. code-block:: yaml
 
   model:
-    multitask_metrics_config:
+    multitask_metrics_cfg:
       log_prediction: true
       metrics:
         wer:
@@ -276,7 +276,7 @@ Each metric within ``MultiTaskMetric`` can be configured with an optional boolea
 .. code-block:: yaml
 
   model:
-    multitask_metrics_config:
+    multitask_metrics_cfg:
       metrics:
         pnc_wer:
           _target_: nemo.collections.asr.metrics.wer.WER

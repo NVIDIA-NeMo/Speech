@@ -24,6 +24,7 @@ import pytest
 from nemo.utils.env_var_parsing import (
     CoercionError,
     RequiredSettingMissingError,
+    get_env_opt_in,
     get_envbool,
     get_envdate,
     get_envdatetime,
@@ -128,6 +129,27 @@ class TestEnvironmentVariableParsing:
         """Test that get_envbool interprets non-standard values as True."""
         with mock.patch.dict(os.environ, {'TEST_BOOL': 'something-else'}):
             assert get_envbool('TEST_BOOL') is True
+
+    # Tests for get_env_opt_in
+    @pytest.mark.parametrize('value', ['true', 'TRUE', ' 1 ', 'yes', 'Y', 't'])
+    def test_get_env_opt_in_affirmative_values(self, value):
+        with mock.patch.dict(os.environ, {'TEST_OPT_IN': value}):
+            assert get_env_opt_in('TEST_OPT_IN') is True
+
+    @pytest.mark.parametrize('value', ['', '  ', 'false', 'FALSE', '0', 'no', 'n', 'f', 'none'])
+    def test_get_env_opt_in_negative_values(self, value):
+        with mock.patch.dict(os.environ, {'TEST_OPT_IN': value}):
+            assert get_env_opt_in('TEST_OPT_IN') is False
+
+    def test_get_env_opt_in_unset(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            assert get_env_opt_in('TEST_OPT_IN') is False
+
+    @pytest.mark.parametrize('value', ['off', 'typo', 'enabled', 'treu'])
+    def test_get_env_opt_in_rejects_unrecognized_values(self, value):
+        with mock.patch.dict(os.environ, {'TEST_OPT_IN': value}):
+            with pytest.raises(CoercionError):
+                get_env_opt_in('TEST_OPT_IN')
 
     # Tests for get_envdecimal
     def test_get_envdecimal_returns_decimal_value(self):

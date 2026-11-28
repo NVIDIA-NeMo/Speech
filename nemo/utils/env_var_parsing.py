@@ -48,6 +48,7 @@ from datetime import datetime
 __all__ = [
     "get_env",
     "get_envbool",
+    "get_env_opt_in",
     "get_envint",
     "get_envfloat",
     "get_envdecimal",
@@ -113,6 +114,19 @@ def _bool(value):
         return value
 
     return not (value is None or value.lower() in ("false", "0", "no", "n", "f", "none"))
+
+
+_OPT_IN_TRUE = ("true", "1", "yes", "y", "t")
+_OPT_IN_FALSE = ("", "false", "0", "no", "n", "f", "none")
+
+
+def _opt_in(value):
+    normalized = value.strip().lower()
+    if normalized in _OPT_IN_TRUE:
+        return True
+    if normalized in _OPT_IN_FALSE:
+        return False
+    raise ValueError(f"Expected one of {_OPT_IN_TRUE + _OPT_IN_FALSE[1:]}, got {value!r}.")
 
 
 def _int(value):
@@ -218,6 +232,16 @@ def get_env(key, *default, **kwargs):
 def get_envbool(key, *default):
     """Return env var cast as boolean."""
     return get_env(key, *default, coerce=_bool)
+
+
+def get_env_opt_in(key):
+    """Return whether env var ``key`` affirmatively opts in to a behavior.
+
+    Unset or empty values and ``false``/``0``/``no``/``n``/``f``/``none`` return ``False``;
+    ``true``/``1``/``yes``/``y``/``t`` return ``True`` (case-insensitive). Any other value raises
+    ``CoercionError`` so that a typo can never silently grant an opt-in.
+    """
+    return get_env(key, False, coerce=_opt_in)
 
 
 def get_envint(key, *default):

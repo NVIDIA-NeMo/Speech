@@ -395,7 +395,7 @@ def test_forward_passes_cp_precomputed_mtp_inputs_to_automodel():
     )
 
     assert model.llm.args is not None
-    torch.testing.assert_close(model.llm.args[0], torch.zeros(1, 4, dtype=torch.long))
+    assert model.llm.args[0] is None
     assert len(model.llm.args[1:]) == len(mtp_embed_inputs)
     for actual, expected in zip(model.llm.args[1:], mtp_embed_inputs):
         assert actual is expected

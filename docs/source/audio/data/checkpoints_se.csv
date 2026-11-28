@@ -1,3 +1,3 @@
-Model Name,Dataset,Sampling Rate,Model Class,Model Card
-nvidia/se_den_sb_16k_small,WSJ0+CHiME,16000Hz,nemo.collections.audio.models.SchroedingerBridgeAudioToAudioModel,`se_den_sb_16k_small <https://huggingface.co/nvidia/se_den_sb_16k_small>`_
-nvidia/se_der_sb_16k_small,WSJ0+Reverb,16000Hz,nemo.collections.audio.models.SchroedingerBridgeAudioToAudioModel,`se_der_sb_16k_small <https://huggingface.co/nvidia/se_der_sb_16k_small>`_
+Model Name,Task,Dataset,Sampling Rate,Model Class,Model Card
+nvidia/se_den_sb_16k_small,Denoising,WSJ0 + CHiME3,16 kHz,nemo.collections.audio.models.SchroedingerBridgeAudioToAudioModel,`se_den_sb_16k_small <https://huggingface.co/nvidia/se_den_sb_16k_small>`_
+nvidia/se_der_sb_16k_small,Dereverberation,WSJ0-Reverb,16 kHz,nemo.collections.audio.models.SchroedingerBridgeAudioToAudioModel,`se_der_sb_16k_small <https://huggingface.co/nvidia/se_der_sb_16k_small>`_
